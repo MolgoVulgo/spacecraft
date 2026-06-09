@@ -25,7 +25,15 @@
           <select id="catalogPieceSelect" aria-hidden="true" tabindex="-1"></select>
 
           <section id="catalogShapePalettePanel" class="shape-palette-panel" hidden>
-            <div class="shape-palette-header">Formes de la pièce sélectionnée</div>
+            <div class="shape-palette-header">Symétrie</div>
+            <div class="shape-symmetry-panel selected-control">
+              <div class="shape-symmetry-grid">
+                <button id="mirrorWidthBtn" type="button" aria-label="Symétrie largeur"></button>
+                <button id="mirrorLengthBtn" type="button" aria-label="Symétrie longueur"></button>
+                <button id="mirrorHeightBtn" type="button" aria-label="Symétrie hauteur"></button>
+              </div>
+            </div>
+            <div class="shape-variant-title">Variante</div>
             <div id="catalogPieceList" class="catalog-piece-list shape-palette" role="listbox" aria-label="Formes disponibles"></div>
           </section>
         </section>
@@ -43,6 +51,10 @@
           <div class="help">
             Taille : double-clic ou drag-drop vers la scène · Forme : applique à la pièce sélectionnée · Clic pièce : sélection · Glisser une pièce : déplacement X/Y · Hauteur : boutons/PageUp/PageDown · Fond : caméra · Molette : zoom · Clic droit : caméra
           </div>
+          <section class="stats-overlay" aria-label="État et statistiques">
+            <div class="stats-overlay-title">Status</div>
+            <section class="stats" id="stats"></section>
+          </section>
         </section>
 
         <aside class="assembly-bottom-bar">
@@ -72,23 +84,6 @@
               <label for="heightInput">Hauteur</label>
               <input id="heightInput" type="number" step="1" value="0" />
             </div>
-          </section>
-
-          <section class="bottom-card transform-card selected-control">
-            <label>Transformation</label>
-            <div class="button-grid symmetry-grid">
-              <button id="mirrorLengthBtn" type="button">Sym. longueur</button>
-              <button id="mirrorWidthBtn" type="button">Sym. largeur</button>
-              <button id="mirrorHeightBtn" type="button">Sym. hauteur</button>
-              <button id="resetMirrorsBtn" type="button">Reset sym.</button>
-              <button id="moveUpBtn" type="button">Monter</button>
-              <button id="moveDownBtn" type="button">Descendre</button>
-            </div>
-          </section>
-
-          <section class="bottom-card stats-card">
-            <label>État / stats</label>
-            <section class="stats" id="stats"></section>
           </section>
         </aside>
       </main>

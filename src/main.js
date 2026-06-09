@@ -21,6 +21,11 @@ const DRAG_WORLD_LIMIT = 20000;
 const SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER = 1.25;
 const SHAPE_BUTTON_COUNT = 14;
 const SHAPE_BUTTON_ICONS = Array.from({ length: SHAPE_BUTTON_COUNT }, (_, index) => `/ui/shape-buttons/button_${String(index + 1).padStart(2, '0')}.png`);
+const SYMMETRY_BUTTON_ICONS = {
+  width: '/ui/shape-buttons/symmetry_width.png',
+  length: '/ui/shape-buttons/symmetry_length.png',
+  height: '/ui/shape-buttons/symmetry_height.png',
+};
 const THEME_COLORS = {
   anchor: 0xd82020,
   edgeValid: 0x000000,
@@ -40,6 +45,7 @@ const state = {
   repo: null,
   instances: [],
   selectedId: null,
+  selectedGroupIds: [],
   selectedCatalogPieceId: null,
   nextInstanceId: 1,
   drag: null,
@@ -701,6 +707,25 @@ function setSymmetryButtonState(symmetry) {
   dom.mirrorHeightBtn.classList.toggle('active', Boolean(symmetry.height));
 }
 
+function mountSymmetryButtonIcons() {
+  const entries = [
+    { button: dom.mirrorWidthBtn, axis: 'width', title: 'Symétrie largeur' },
+    { button: dom.mirrorLengthBtn, axis: 'length', title: 'Symétrie longueur' },
+    { button: dom.mirrorHeightBtn, axis: 'height', title: 'Symétrie hauteur' },
+  ];
+  for (const { button, axis, title } of entries) {
+    if (!button) continue;
+    button.textContent = '';
+    button.title = title;
+    const icon = document.createElement('img');
+    icon.className = 'shape-symmetry-icon';
+    icon.src = SYMMETRY_BUTTON_ICONS[axis];
+    icon.alt = title;
+    icon.draggable = false;
+    button.append(icon);
+  }
+}
+
 function toggleSelectedSymmetry(axis) {
   const selected = getSelectedInstance();
   if (!selected) return;
@@ -801,7 +826,7 @@ function hasCollision(instance, position) {
   return collidesWithOthers(getInstanceBox(instance, position), instance.id);
 }
 
-function calculateShipStats() {
+function calculateShipStatsForInstances(instances) {
   const definitions = state.catalog?.definitions?.spec_fields ?? {};
   const result = {};
   const accumulators = {};
@@ -811,7 +836,7 @@ function calculateShipStats() {
     accumulators[fieldId] = { weightedValue: 0, weight: 0, unknown: false };
   }
 
-  for (const instance of state.instances) {
+  for (const instance of instances) {
     const catalogPiece = getCatalogPieceById(instance.catalogPieceId);
     const profile = getEffectiveSpecProfile(catalogPiece?.spec_profile_id);
     const specs = profile?.specs ?? {};
@@ -853,67 +878,80 @@ function calculateShipStats() {
     }
   }
 
-  if (state.instances.length === 0) {
-    for (const field of Object.values(result)) field.value = 0;
+  if (instances.length === 0) {
+    for (const [fieldId, field] of Object.entries(result)) {
+      if (definitions[fieldId]?.aggregation === 'weighted_average') field.value = null;
+      else field.value = 0;
+    }
   }
 
   return result;
 }
 
-function updateStats() {
-  const selected = getSelectedInstance();
-  const computed = calculateShipStats();
-  const definitions = state.catalog?.definitions?.spec_fields ?? {};
-  const statsLines = Object.entries(computed).map(([fieldId, item]) => {
-    const label = definitions[fieldId]?.label_fr ?? fieldId;
-    const value = item.value === null ? 'inconnu' : fmt(item.value);
-    return `${label.padEnd(30, ' ')} : ${value}${item.unit ? ` ${item.unit}` : ''} [${item.status}]`;
-  });
+function calculateShipStats() {
+  return calculateShipStatsForInstances(state.instances);
+}
 
-  if (!selected) {
+function getActiveStatsSelection() {
+  const selectedGroupIds = Array.isArray(state.selectedGroupIds) ? state.selectedGroupIds.filter(Boolean) : [];
+  if (selectedGroupIds.length) {
+    return {
+      label: `Groupe (${selectedGroupIds.length} pièce(s))`,
+      instances: state.instances.filter((instance) => selectedGroupIds.includes(instance.id)),
+      fallbackMissingToZero: false,
+    };
+  }
+
+  const selected = getSelectedInstance();
+  if (selected) {
+    return {
+      label: selected.label,
+      instances: [selected],
+      fallbackMissingToZero: true,
+    };
+  }
+
+  return {
+    label: null,
+    instances: state.instances,
+    fallbackMissingToZero: false,
+  };
+}
+
+function formatStatsLines(computed, options = {}) {
+  const { fallbackMissingToZero = false } = options;
+  const definitions = state.catalog?.definitions?.spec_fields ?? {};
+  return Object.entries(definitions).map(([fieldId, definition]) => {
+    const item = computed[fieldId] ?? { value: null, unit: definition.unit ?? null };
+    const value = item.value === null
+      ? (fallbackMissingToZero ? '0' : 'inconnu')
+      : fmt(item.value);
+    return `${definition.label_fr} : ${value}${item.unit ? ` ${item.unit}` : ''}`;
+  });
+}
+
+function updateStats() {
+  const selection = getActiveStatsSelection();
+  const statsLines = formatStatsLines(
+    calculateShipStatsForInstances(selection.instances),
+    { fallbackMissingToZero: selection.fallbackMissingToZero },
+  );
+
+  if (!selection.label) {
     dom.stats.textContent = [
-      `mode           : ${APP_MODE === 'editor' ? 'édition interne' : 'assembly public'}`,
-      `schéma         : ${state.catalog?.schema_version ?? 'inconnu'}`,
-      `catalogue      : ${state.catalogSource}`,
-      `scène          : ${state.instances.length} pièce(s)`,
-      'sélection      : aucune',
-      state.lastMessage ? `message        : ${state.lastMessage}` : '',
-      '',
-      'stats calculées',
       ...statsLines,
+      state.lastMessage ? '' : null,
+      state.lastMessage || null,
     ].filter(Boolean).join('\n');
     return;
   }
 
-  const catalogPiece = getCatalogPieceById(selected.catalogPieceId);
-  const shape = getShapeVariant(catalogPiece?.shape_variant_id);
-  const size = getSize(catalogPiece?.size_id);
-  const spec = getEffectiveSpecProfile(catalogPiece?.spec_profile_id);
-  const p = selected.group.position;
-
   dom.stats.textContent = [
-    `mode           : ${APP_MODE === 'editor' ? 'édition interne' : 'assembly public'}`,
-    `schéma         : ${state.catalog?.schema_version ?? 'inconnu'}`,
-    `catalogue      : ${state.catalogSource}`,
-    `scène          : ${state.instances.length} pièce(s)`,
-    `instance       : ${selected.label}`,
-    `catalog_piece  : ${catalogPiece?.id ?? 'inconnu'}`,
-    `shape_variant  : ${shape?.id ?? 'inconnu'}`,
-    `spec_profile   : ${spec?.id ?? 'inconnu'}`,
-    `symétries      : ${getSymmetryLabel(selected.symmetry)}`,
-    `taille logique : ${size?.label ?? catalogPiece?.size_id ?? 'inconnue'}`,
-    `ancres         : ${shape?.anchors?.length ?? 0} point(s) · affichage ${state.showAnchors ? 'oui' : 'non'}`,
-    `triangles      : ${shape?.mesh_stats?.triangleCount ?? 'n/a'}`,
-    `sommets        : ${shape?.mesh_stats?.vertexCount ?? 'n/a'}`,
-    `position       : ${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}`,
-    'rotation       : fixe',
-    'échelle        : 1:1',
-    'volume réservé : dimensions catalogue fixes',
-    'collision      : boîte catalogue fixe',
-    state.lastMessage ? `message        : ${state.lastMessage}` : '',
+    selection.label,
     '',
-    'stats calculées',
     ...statsLines,
+    state.lastMessage ? '' : null,
+    state.lastMessage || null,
   ].filter(Boolean).join('\n');
 }
 
@@ -2174,8 +2212,10 @@ function renderSizeList(sizeOptions) {
     if (option.value === state.catalogFilters.sizeId) button.classList.add('active');
 
     const dimensions = getSize(option.value)?.dimensions;
-    const dimensionsLabel = dimensions ? `${dimensions.length}×${dimensions.width}×${dimensions.height}` : option.label;
-    button.innerHTML = `<span>${option.label}</span><small>${dimensionsLabel}</small>`;
+    button.textContent = option.label;
+    button.title = dimensions
+      ? `${option.label}\n${dimensions.length}×${dimensions.width}×${dimensions.height}`
+      : option.label;
 
     button.addEventListener('click', () => {
       state.catalogFilters.sizeId = option.value;
@@ -2290,12 +2330,7 @@ function renderShapePalette(pieces) {
     icon.src = SHAPE_BUTTON_ICONS[variantIndex - 1];
     icon.alt = piece ? getVariantDisplayLabel(shape, size) : `Variante ${variantIndex}`;
     icon.draggable = false;
-
-    const label = document.createElement('span');
-    label.className = 'shape-label';
-    label.textContent = piece ? getVariantDisplayLabel(shape, size) : `Variante ${variantIndex}`;
-
-    item.append(icon, label);
+    item.append(icon);
     if (piece) item.addEventListener('click', () => applyCatalogShapeToSelectedInstance(piece.id));
     dom.catalogPieceList.append(item);
   }
@@ -2898,6 +2933,7 @@ async function init() {
 }
 
 function bindEvents() {
+  mountSymmetryButtonIcons();
   dom.catalogPieceSelect?.addEventListener('change', () => setSelectedCatalogPiece(dom.catalogPieceSelect.value));
 
   if (IS_EDITOR) {
@@ -2928,13 +2964,12 @@ function bindEvents() {
     selected.material.color.set(dom.colorInput.value);
   });
 
-  dom.mirrorLengthBtn.addEventListener('click', () => toggleSelectedSymmetry('length'));
-  dom.mirrorWidthBtn.addEventListener('click', () => toggleSelectedSymmetry('width'));
-  dom.mirrorHeightBtn.addEventListener('click', () => toggleSelectedSymmetry('height'));
-  dom.resetMirrorsBtn.addEventListener('click', resetSelectedSymmetries);
+  dom.mirrorLengthBtn?.addEventListener('click', () => toggleSelectedSymmetry('length'));
+  dom.mirrorWidthBtn?.addEventListener('click', () => toggleSelectedSymmetry('width'));
+  dom.mirrorHeightBtn?.addEventListener('click', () => toggleSelectedSymmetry('height'));
 
-  dom.moveUpBtn.addEventListener('click', () => moveSelectedHeight(getHeightStep()));
-  dom.moveDownBtn.addEventListener('click', () => moveSelectedHeight(-getHeightStep()));
+  dom.moveUpBtn?.addEventListener('click', () => moveSelectedHeight(getHeightStep()));
+  dom.moveDownBtn?.addEventListener('click', () => moveSelectedHeight(-getHeightStep()));
   dom.heightInput.addEventListener('change', () => setSelectedHeight(dom.heightInput.value));
 
   dom.gridInput.checked = true;
