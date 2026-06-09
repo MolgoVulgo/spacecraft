@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SpaceCraft · Assembly Planner</title>
+  </head>
+  <body data-app-mode="assembly" class="assembly-mode">
+    <div id="app">
+      <aside class="panel left-panel assembly-catalog-panel">
+        <header>
+          <h1>SpaceCraft Assembly</h1>
+          <p>Assembleur public · catalogue verrouillé</p>
+        </header>
+
+        <section class="control-block catalog-only-block assembly-catalog-controls">
+          <label for="catalogFamilyFilter">Famille / matériau</label>
+          <select id="catalogFamilyFilter"></select>
+
+          <div class="catalog-section-title">Tailles disponibles</div>
+          <div id="catalogSizeList" class="catalog-size-list" role="listbox" aria-label="Tailles disponibles"></div>
+
+          <select id="catalogSizeFilter" aria-hidden="true" tabindex="-1"></select>
+          <select id="catalogProfileFilter" aria-hidden="true" tabindex="-1"></select>
+          <select id="catalogPieceSelect" aria-hidden="true" tabindex="-1"></select>
+
+          <div class="shape-palette-header">Formes de la pièce sélectionnée</div>
+          <div id="catalogPieceList" class="catalog-piece-list shape-palette" role="listbox" aria-label="Formes disponibles"></div>
+        </section>
+      </aside>
+
+      <main class="viewport-wrap assembly-viewport-layout">
+        <section class="viewport-stage">
+          <canvas id="viewer"></canvas>
+          <div id="emptyHint" class="empty-hint">
+            Scène vide. Double-clique une taille ou glisse une taille dans la scène.
+          </div>
+          <div id="dimensionOverlay" class="dimension-overlay" hidden></div>
+          <div class="help">
+            Taille : double-clic ou drag-drop vers la scène · Forme : applique à la pièce sélectionnée · Clic pièce : sélection · Glisser une pièce : déplacement X/Y · Hauteur : boutons/PageUp/PageDown · Fond : caméra · Molette : zoom · Clic droit : caméra
+          </div>
+        </section>
+
+        <aside class="assembly-bottom-bar">
+          <section class="bottom-card placed-card">
+            <label for="instanceSelect">Pièces placées</label>
+            <select id="instanceSelect" size="5"></select>
+            <div class="button-grid compact">
+              <button id="duplicatePieceBtn" type="button">Dupliquer</button>
+              <button id="removePieceBtn" type="button">Supprimer</button>
+              <button id="clearSceneBtn" type="button">Vider scène</button>
+              <button id="deselectBtn" type="button">Désélectionner</button>
+            </div>
+          </section>
+
+          <section class="bottom-card selection-card">
+            <label>Sélection</label>
+            <div id="catalogSummary" class="summary-box assembly-summary-box"></div>
+            <div class="inline-bottom-controls selected-control">
+              <label for="colorInput">Couleur</label>
+              <input id="colorInput" type="color" value="#d46a2c" />
+              <label for="heightStepInput">Pas Z</label>
+              <input id="heightStepInput" type="number" min="1" max="100" step="1" value="10" />
+              <label for="heightInput">Hauteur</label>
+              <input id="heightInput" type="number" step="1" value="0" />
+            </div>
+          </section>
+
+          <section class="bottom-card transform-card selected-control">
+            <label>Transformation</label>
+            <div class="button-grid symmetry-grid">
+              <button id="mirrorLengthBtn" type="button">Sym. longueur</button>
+              <button id="mirrorWidthBtn" type="button">Sym. largeur</button>
+              <button id="mirrorHeightBtn" type="button">Sym. hauteur</button>
+              <button id="resetMirrorsBtn" type="button">Reset sym.</button>
+              <button id="moveUpBtn" type="button">Monter</button>
+              <button id="moveDownBtn" type="button">Descendre</button>
+            </div>
+          </section>
+
+          <section class="bottom-card scene-card">
+            <label>Scène</label>
+            <div class="inline-bottom-controls">
+              <label for="gridInput">Grille</label>
+              <input id="gridInput" type="checkbox" checked />
+              <label for="snapInput">Aimant</label>
+              <input id="snapInput" type="checkbox" checked />
+              <label for="snapStepInput">Pas</label>
+              <input id="snapStepInput" type="number" min="0.5" max="2" step="0.5" value="0.5" disabled />
+            </div>
+            <div class="button-grid compact scene-actions">
+              <button id="resetViewBtn" type="button">Vue reset</button>
+              <button id="viewTopBtn" type="button">Vue dessus</button>
+              <button id="viewFrontBtn" type="button">Vue face</button>
+              <button id="viewSideBtn" type="button">Vue côté</button>
+              <button id="fitSelectedBtn" type="button">Zoom sélection</button>
+              <button id="fitAllBtn" type="button">Zoom scène</button>
+              <button id="toggleAnchorsBtn" type="button">Afficher ancres</button>
+              <button id="screenshotBtn" type="button">Capture PNG</button>
+              <button id="exportBlueprintBtn" type="button">Exporter blueprint</button>
+            </div>
+          </section>
+
+          <section class="bottom-card stats-card">
+            <label>État / stats</label>
+            <section class="stats" id="stats"></section>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

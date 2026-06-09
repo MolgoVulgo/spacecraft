@@ -1,0 +1,261 @@
+{
+  "id": "standard_titane_4x3x1",
+  "name": "Standard titane 4x3x1",
+  "material": "titane",
+  "base_size": [
+    4,
+    3,
+    1
+  ],
+  "logical_size": [
+    4,
+    3,
+    1
+  ],
+  "family": "4x3x1",
+  "variant": "standard",
+  "render_mode": "voxel",
+  "shape": {
+    "kind": "box"
+  },
+  "mesh_id": "",
+  "source_mesh": null,
+  "solid_cells": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      2,
+      0
+    ],
+    [
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      2,
+      0
+    ],
+    [
+      2,
+      1,
+      0
+    ],
+    [
+      2,
+      2,
+      0
+    ],
+    [
+      3,
+      1,
+      0
+    ],
+    [
+      3,
+      2,
+      0
+    ]
+  ],
+  "anchors": [
+    {
+      "id": "anchor_width_min_3_0_0_0",
+      "position": [
+        3.5,
+        0.0,
+        0.5
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ],
+      "step": 0.5,
+      "side": "width_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_height_min_3_0_0_1",
+      "position": [
+        3.5,
+        0.5,
+        0.0
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "step": 0.5,
+      "side": "height_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_length_min_0_0_0_0",
+      "position": [
+        0.0,
+        0.5,
+        0.5
+      ],
+      "normal": [
+        -1,
+        0,
+        0
+      ],
+      "step": 0.5,
+      "side": "length_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_width_min_0_0_0_1",
+      "position": [
+        0.5,
+        0.0,
+        0.5
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ],
+      "step": 0.5,
+      "side": "width_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_height_min_0_0_0_2",
+      "position": [
+        0.5,
+        0.5,
+        0.0
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "step": 0.5,
+      "side": "height_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_width_min_2_0_0_0",
+      "position": [
+        2.5,
+        0.0,
+        0.5
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ],
+      "step": 0.5,
+      "side": "width_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_height_min_2_0_0_1",
+      "position": [
+        2.5,
+        0.5,
+        0.0
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "step": 0.5,
+      "side": "height_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_width_min_1_0_0_0",
+      "position": [
+        1.5,
+        0.0,
+        0.5
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ],
+      "step": 0.5,
+      "side": "width_min",
+      "type": "snap"
+    },
+    {
+      "id": "anchor_height_min_1_0_0_1",
+      "position": [
+        1.5,
+        0.5,
+        0.0
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "step": 0.5,
+      "side": "height_min",
+      "type": "snap"
+    }
+  ],
+  "specs": {
+    "system": {
+      "label": "Apport système",
+      "value": "",
+      "unit": "SP"
+    },
+    "chassis": {
+      "label": "Châssis",
+      "value": "",
+      "unit": ""
+    },
+    "mass": {
+      "label": "Masse",
+      "value": "",
+      "unit": "t"
+    },
+    "fuselage": {
+      "label": "Fuselage",
+      "value": "",
+      "unit": ""
+    },
+    "heatCapacity": {
+      "label": "Capacité thermique",
+      "value": "",
+      "unit": "MJ/K"
+    },
+    "thermalConductivity": {
+      "label": "Conductibilité thermique de matériau",
+      "value": "",
+      "unit": "W/aK"
+    },
+    "decoration": {
+      "label": "Capacité de décoration",
+      "value": "",
+      "unit": "DP"
+    }
+  },
+  "symmetry": {
+    "possible": [
+      "length",
+      "width",
+      "height"
+    ],
+    "uiEnabled": false
+  }
+}

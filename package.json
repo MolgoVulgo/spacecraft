@@ -1,0 +1,19 @@
+{
+  "name": "spacecraft-rich-catalog-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node node_modules/vite/bin/vite.js --host 0.0.0.0",
+    "build": "node node_modules/vite/bin/vite.js build",
+    "preview": "node node_modules/vite/bin/vite.js preview --host 0.0.0.0",
+    "build:assembly": "node node_modules/vite/bin/vite.js build && node scripts/prune-editor-build.mjs",
+    "preview:assembly": "npm run build:assembly && node node_modules/vite/bin/vite.js preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "vite": "latest",
+    "three": "latest"
+  },
+  "devDependencies": {},
+  "description": "SpaceCraft C1 local web editor with rich catalog schema"
+}

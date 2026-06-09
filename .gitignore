@@ -1,0 +1,13 @@
+node_modules/
+dist/
+tmp/
+*.zip
+
+tools/.venv/
+tools/__pycache__/
+tools/piece_editor/__pycache__/
+
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
