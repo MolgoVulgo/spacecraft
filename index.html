@@ -24,14 +24,18 @@
           <select id="catalogProfileFilter" aria-hidden="true" tabindex="-1"></select>
           <select id="catalogPieceSelect" aria-hidden="true" tabindex="-1"></select>
 
-          <div class="shape-palette-header">Formes de la pièce sélectionnée</div>
-          <div id="catalogPieceList" class="catalog-piece-list shape-palette" role="listbox" aria-label="Formes disponibles"></div>
+          <section id="catalogShapePalettePanel" class="shape-palette-panel" hidden>
+            <div class="shape-palette-header">Formes de la pièce sélectionnée</div>
+            <div id="catalogPieceList" class="catalog-piece-list shape-palette" role="listbox" aria-label="Formes disponibles"></div>
+          </section>
         </section>
       </aside>
 
       <main class="viewport-wrap assembly-viewport-layout">
         <section class="viewport-stage">
           <canvas id="viewer"></canvas>
+          <input id="gridInput" type="checkbox" checked hidden />
+          <input id="showAnchorsInput" type="checkbox" hidden />
           <div id="emptyHint" class="empty-hint">
             Scène vide. Double-clique une taille ou glisse une taille dans la scène.
           </div>
@@ -50,6 +54,10 @@
               <button id="removePieceBtn" type="button">Supprimer</button>
               <button id="clearSceneBtn" type="button">Vider scène</button>
               <button id="deselectBtn" type="button">Désélectionner</button>
+              <button id="fitSelectedBtn" type="button">Zoom sélection</button>
+              <button id="fitAllBtn" type="button">Zoom scène</button>
+              <button id="screenshotBtn" type="button">Capture PNG</button>
+              <button id="exportBlueprintBtn" type="button">Exporter blueprint</button>
             </div>
           </section>
 
@@ -75,29 +83,6 @@
               <button id="resetMirrorsBtn" type="button">Reset sym.</button>
               <button id="moveUpBtn" type="button">Monter</button>
               <button id="moveDownBtn" type="button">Descendre</button>
-            </div>
-          </section>
-
-          <section class="bottom-card scene-card">
-            <label>Scène</label>
-            <div class="inline-bottom-controls">
-              <label for="gridInput">Grille</label>
-              <input id="gridInput" type="checkbox" checked />
-              <label for="snapInput">Aimant</label>
-              <input id="snapInput" type="checkbox" checked />
-              <label for="snapStepInput">Pas</label>
-              <input id="snapStepInput" type="number" min="0.5" max="2" step="0.5" value="0.5" disabled />
-            </div>
-            <div class="button-grid compact scene-actions">
-              <button id="resetViewBtn" type="button">Vue reset</button>
-              <button id="viewTopBtn" type="button">Vue dessus</button>
-              <button id="viewFrontBtn" type="button">Vue face</button>
-              <button id="viewSideBtn" type="button">Vue côté</button>
-              <button id="fitSelectedBtn" type="button">Zoom sélection</button>
-              <button id="fitAllBtn" type="button">Zoom scène</button>
-              <button id="toggleAnchorsBtn" type="button">Afficher ancres</button>
-              <button id="screenshotBtn" type="button">Capture PNG</button>
-              <button id="exportBlueprintBtn" type="button">Exporter blueprint</button>
             </div>
           </section>
 

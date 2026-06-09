@@ -2,6 +2,9 @@ import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { buildShapeGeometry, catalogCellCenterVector, catalogPointVector, createCatalogReservationBox } from './shape-engine.js';
+import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
+import { NAVIGATION_CUBE_VIEW_IDS, createNavigationCubeViewApi } from './navigation-cube.js';
+import { createEditorViewController } from './view-controller.js';
 
 const CATALOG_URL = '/data/4x3x1_catalog.json';
 const CELL_SCALE = 36;
@@ -21,6 +24,7 @@ const state = {
   selectedFace: null,
   selectedOperationIndex: null,
   message: '',
+  activeViewId: NAVIGATION_CUBE_VIEW_IDS.home,
 };
 
 const dom = {
@@ -43,6 +47,7 @@ const dom = {
   validateShapeBtn: document.querySelector('#validateShapeBtn'),
   stats: document.querySelector('#editorStats'),
   canvas: document.querySelector('#editorViewer'),
+  viewportWrap: document.querySelector('.editor-viewport-wrap'),
 
   shapeIdInput: document.querySelector('#shapeIdInput'),
   shapeLabelInput: document.querySelector('#shapeLabelInput'),
@@ -87,6 +92,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101114);
 
+// Viewer coordinate convention shared with assembly:
+// X = width / left-right, Y = depth / length, Z = height / vertical.
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
 camera.position.set(220, -260, 180);
 
@@ -95,6 +102,9 @@ orbit.enableDamping = true;
 orbit.dampingFactor = 0.08;
 orbit.screenSpacePanning = true;
 orbit.target.set(0, 0, 0);
+
+let editorViewController = null;
+let editorNavigationCubeOverlay = null;
 
 const root = new THREE.Group();
 scene.add(root);
@@ -115,6 +125,44 @@ scene.add(key);
 const fill = new THREE.DirectionalLight(0xffffff, 0.8);
 fill.position.set(-80, 70, 80);
 scene.add(fill);
+
+editorViewController = createEditorViewController({
+  camera,
+  orbitControls: orbit,
+  getTarget: () => orbit.target.clone(),
+  getActiveViewId: () => state.activeViewId,
+  setActiveViewId: (viewId) => {
+    state.activeViewId = viewId;
+  },
+  defaultHomeDirection: [220, -260, 180],
+  defaultHomeDistance: new THREE.Vector3(220, -260, 180).length(),
+});
+
+function syncEditorNavigationCubeActiveView() {
+  editorNavigationCubeOverlay?.setActiveViewId(editorViewController?.getActiveViewId?.() ?? state.activeViewId);
+}
+
+function mountEditorNavigationCube() {
+  if (!dom.viewportWrap || editorNavigationCubeOverlay) return;
+  const viewApi = createNavigationCubeViewApi({
+    setView(viewId) {
+      editorViewController?.setView(viewId, { target: orbit.target.clone() });
+      syncEditorNavigationCubeActiveView();
+    },
+    resetView() {
+      resetPreview();
+    },
+    getActiveViewId() {
+      return editorViewController?.getActiveViewId?.() ?? state.activeViewId;
+    },
+  });
+  editorNavigationCubeOverlay = createNavigationCubeOverlay({
+    container: dom.viewportWrap,
+    viewApi,
+  });
+  editorNavigationCubeOverlay.mount();
+  syncEditorNavigationCubeActiveView();
+}
 
 function mapById(items = []) {
   return new Map(items.map((item) => [item.id, item]));
@@ -1888,20 +1936,14 @@ function fitPreview(renderNow = true) {
   const maxSize = Math.max(size.dimensions.length, size.dimensions.width, size.dimensions.height) * CELL_SCALE;
   const center = new THREE.Vector3(0, 0, 0);
   const distance = Math.max(180, maxSize * 2.4);
-  const dir = new THREE.Vector3(0.8, -1, 0.75).normalize();
-  camera.position.copy(center.clone().add(dir.multiplyScalar(distance)));
-  camera.near = Math.max(distance / 100, 0.1);
-  camera.far = Math.max(distance * 50, 5000);
-  camera.updateProjectionMatrix();
-  orbit.target.copy(center);
-  orbit.update();
+  editorViewController?.resetView({ target: center, distance });
+  syncEditorNavigationCubeActiveView();
   if (renderNow) renderer.render(scene, camera);
 }
 
 function resetPreview() {
-  camera.position.set(220, -260, 180);
-  orbit.target.set(0, 0, 0);
-  orbit.update();
+  editorViewController?.resetView({ target: new THREE.Vector3(0, 0, 0) });
+  syncEditorNavigationCubeActiveView();
 }
 
 function renderStats() {
@@ -2293,6 +2335,7 @@ async function init() {
   const firstGroup = getBaseGroups()[0];
   selectBaseModel(firstGroup, firstGroup.sizes[0]);
   bindEvents();
+  mountEditorNavigationCube();
   animate();
 }
 

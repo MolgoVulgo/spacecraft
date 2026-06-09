@@ -1,14 +1,26 @@
 import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { ASSEMBLY_MAGNET_ENABLED, ASSEMBLY_MAGNET_STEP_UNITS } from './assembly-config.js';
 import { buildShapeGeometry, createCatalogReservationBox, catalogPointVector } from './shape-engine.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
+import { createNavigationCubeViewApi } from './navigation-cube.js';
+import {
+  LEGACY_ASSEMBLY_SIDE_VIEW_ID,
+  createAssemblyViewController,
+  getAssemblyProjectionPlane,
+  getLegacyAssemblyButtonViewId,
+  normalizeViewId,
+} from './view-controller.js';
 
 const CATALOG_URL = '/data/4x3x1_catalog.json';
 const DEFAULT_COLOR = '#d46a2c';
 const COLLISION_EPSILON = 1e-5;
 const DRAG_WORLD_LIMIT = 20000;
 const SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER = 1.25;
+const SHAPE_BUTTON_COUNT = 14;
+const SHAPE_BUTTON_ICONS = Array.from({ length: SHAPE_BUTTON_COUNT }, (_, index) => `/ui/shape-buttons/button_${String(index + 1).padStart(2, '0')}.png`);
 const THEME_COLORS = {
   anchor: 0xd82020,
   edgeValid: 0x000000,
@@ -39,8 +51,10 @@ const state = {
 
 const dom = {
   canvas: document.querySelector('#viewer'),
+  viewportStage: document.querySelector('.viewport-stage'),
   catalogPieceSelect: document.querySelector('#catalogPieceSelect'),
   catalogPieceList: document.querySelector('#catalogPieceList'),
+  catalogShapePalettePanel: document.querySelector('#catalogShapePalettePanel'),
   catalogFamilyFilter: document.querySelector('#catalogFamilyFilter'),
   catalogSizeFilter: document.querySelector('#catalogSizeFilter'),
   catalogSizeList: document.querySelector('#catalogSizeList'),
@@ -61,16 +75,10 @@ const dom = {
   moveUpBtn: document.querySelector('#moveUpBtn'),
   moveDownBtn: document.querySelector('#moveDownBtn'),
   gridInput: document.querySelector('#gridInput'),
-  snapInput: document.querySelector('#snapInput'),
-  snapStepInput: document.querySelector('#snapStepInput'),
+  showAnchorsInput: document.querySelector('#showAnchorsInput'),
   stats: document.querySelector('#stats'),
   emptyHint: document.querySelector('#emptyHint'),
   dimensionOverlay: document.querySelector('#dimensionOverlay'),
-  resetViewBtn: document.querySelector('#resetViewBtn'),
-  viewTopBtn: document.querySelector('#viewTopBtn'),
-  viewFrontBtn: document.querySelector('#viewFrontBtn'),
-  viewSideBtn: document.querySelector('#viewSideBtn'),
-  toggleAnchorsBtn: document.querySelector('#toggleAnchorsBtn'),
   fitSelectedBtn: document.querySelector('#fitSelectedBtn'),
   fitAllBtn: document.querySelector('#fitAllBtn'),
   screenshotBtn: document.querySelector('#screenshotBtn'),
@@ -117,6 +125,9 @@ orbitControls.enableDamping = true;
 orbitControls.dampingFactor = 0.08;
 orbitControls.screenSpacePanning = true;
 orbitControls.target.set(0, 0, 0);
+
+let assemblyViewController = null;
+let assemblyNavigationCubeOverlay = null;
 
 const rootGroup = new THREE.Group();
 scene.add(rootGroup);
@@ -167,7 +178,7 @@ function updateAssemblyGrid() {
 
 function getMagnetStep() {
   const scale = state.catalog?.units?.mesh_unit_scale ?? 100;
-  return scale * 0.5;
+  return scale * ASSEMBLY_MAGNET_STEP_UNITS;
 }
 
 
@@ -196,6 +207,11 @@ function getCatalogPieceById(pieceId) {
 
 function getSelectedCatalogPiece() {
   return getCatalogPieceById(state.selectedCatalogPieceId ?? dom.catalogPieceSelect?.value);
+}
+
+function getSceneSelectedCatalogPiece() {
+  const selected = getSelectedInstance();
+  return selected ? getCatalogPieceById(selected.catalogPieceId) : null;
 }
 
 function setSelectedCatalogPiece(pieceId) {
@@ -416,8 +432,7 @@ function updateAnchorVisibility() {
   for (const instance of state.instances) {
     if (instance.anchors) instance.anchors.visible = IS_EDITOR || state.showAnchors;
   }
-  dom.toggleAnchorsBtn?.classList.toggle('active', state.showAnchors);
-  if (dom.toggleAnchorsBtn) dom.toggleAnchorsBtn.textContent = state.showAnchors ? 'Masquer ancres' : 'Afficher ancres';
+  if (dom.showAnchorsInput) dom.showAnchorsInput.checked = state.showAnchors;
   updateStats();
 }
 
@@ -638,8 +653,11 @@ function clearScene() {
 function selectInstance(id) {
   const instance = state.instances.find((item) => item.id === id);
   state.selectedId = instance ? id : null;
+  syncAssemblyPaletteToSelectedInstance();
   refreshInstanceList();
   updateSelectionUi();
+  renderCatalogPieceOptions();
+  renderCatalogEditors();
   updateStats();
   updateSelectionBox();
   updateDimensionOverlay();
@@ -663,7 +681,7 @@ function updateSelectionUi() {
   dom.duplicatePieceBtn.disabled = !hasSelected;
   dom.removePieceBtn.disabled = !hasSelected;
   dom.deselectBtn.disabled = !hasSelected;
-  dom.fitSelectedBtn.disabled = !hasSelected;
+  if (dom.fitSelectedBtn) dom.fitSelectedBtn.disabled = !hasSelected;
 
   if (!selected) {
     dom.colorInput.value = DEFAULT_COLOR;
@@ -912,8 +930,8 @@ function fmt(value) {
 function updateEmptyHint() {
   dom.emptyHint.style.display = state.instances.length === 0 ? 'block' : 'none';
   dom.clearSceneBtn.disabled = state.instances.length === 0;
-  dom.fitAllBtn.disabled = state.instances.length === 0;
-  dom.exportBlueprintBtn.disabled = state.instances.length === 0;
+  if (dom.fitAllBtn) dom.fitAllBtn.disabled = state.instances.length === 0;
+  if (dom.exportBlueprintBtn) dom.exportBlueprintBtn.disabled = state.instances.length === 0;
 }
 
 function updateSelectionBox() {
@@ -962,10 +980,11 @@ function fitOrthographicBox(box, padding = 1.25) {
   const size = box.getSize(new THREE.Vector3());
   let viewWidth = Math.max(size.x, 100);
   let viewHeight = Math.max(size.y, 100);
-  if (state.viewMode === 'front') {
+  const projectionPlane = getAssemblyProjectionPlane(state.viewMode);
+  if (projectionPlane === 'xz') {
     viewWidth = Math.max(size.x, 100);
     viewHeight = Math.max(size.z, 100);
-  } else if (state.viewMode === 'side') {
+  } else if (projectionPlane === 'yz') {
     viewWidth = Math.max(size.y, 100);
     viewHeight = Math.max(size.z, 100);
   }
@@ -977,7 +996,7 @@ function fitOrthographicBox(box, padding = 1.25) {
 }
 
 function resetView() {
-  setAssemblyView('top', true);
+  assemblyViewController?.resetView(true);
 }
 
 function takeScreenshot() {
@@ -989,52 +1008,17 @@ function takeScreenshot() {
 }
 
 function setAssemblyView(mode = 'top', fit = true) {
-  state.viewMode = mode;
-  const distance = 1200;
-  const target = orbitControls.target.lengthSq() ? orbitControls.target.clone() : new THREE.Vector3(0, 0, 0);
-
-  if (mode === 'front') {
-    // Front: X = largeur, Z = hauteur. Y/profondeur part dans l'écran.
-    camera.position.set(target.x, target.y - distance, target.z);
-    camera.up.set(0, 0, 1);
-  } else if (mode === 'side') {
-    // Side: Y = profondeur/longueur, Z = hauteur. X/largeur part dans l'écran.
-    camera.position.set(target.x + distance, target.y, target.z);
-    camera.up.set(0, 0, 1);
-  } else {
-    // Top: X = largeur, Y = profondeur/longueur. Vue de contrôle sans perspective.
-    mode = 'top';
-    state.viewMode = mode;
-    camera.position.set(target.x, target.y, target.z + distance);
-    camera.up.set(0, 1, 0);
-  }
-
-  camera.lookAt(target);
-  updateOrthographicFrustum(camera.userData.viewSize ?? 1000);
-  orbitControls.update();
-  setActiveViewButton(mode);
-  updateDimensionOverlay();
-  if (fit) fitCameraToAll(false);
+  assemblyViewController?.setView(mode, fit);
 }
 
 function positionCameraForCurrentView(center) {
-  const distance = 1200;
-  if (state.viewMode === 'front') {
-    camera.position.set(center.x, center.y - distance, center.z);
-    camera.up.set(0, 0, 1);
-  } else if (state.viewMode === 'side') {
-    camera.position.set(center.x + distance, center.y, center.z);
-    camera.up.set(0, 0, 1);
-  } else {
-    camera.position.set(center.x, center.y, center.z + distance);
-    camera.up.set(0, 1, 0);
-  }
-  camera.lookAt(center);
+  assemblyViewController?.positionCameraForTarget(center);
 }
 
 function setActiveViewButton(mode) {
-  for (const [button, value] of [[dom.viewTopBtn, 'top'], [dom.viewFrontBtn, 'front'], [dom.viewSideBtn, 'side']]) {
-    button?.classList.toggle('active', value === mode);
+  const legacyMode = getLegacyAssemblyButtonViewId(mode);
+  for (const [button, value] of [[null, 'top'], [null, 'front'], [null, LEGACY_ASSEMBLY_SIDE_VIEW_ID]]) {
+    button?.classList.toggle('active', value === legacyMode);
   }
 }
 
@@ -1081,6 +1065,59 @@ function updateOrthographicFrustum(viewSize = camera.userData.viewSize ?? 1000) 
   camera.bottom = -viewSize / 2;
   camera.updateProjectionMatrix();
 }
+
+function mountAssemblyNavigationCube() {
+  if (!dom.viewportStage || assemblyNavigationCubeOverlay) return;
+  const viewApi = createNavigationCubeViewApi({
+    setView(viewId) {
+      assemblyViewController?.setView(viewId, true);
+    },
+    resetView() {
+      assemblyViewController?.resetView(true);
+    },
+    getActiveViewId() {
+      return state.viewMode;
+    },
+  });
+  assemblyNavigationCubeOverlay = createNavigationCubeOverlay({
+    container: dom.viewportStage,
+    viewApi,
+  });
+  assemblyNavigationCubeOverlay.mount();
+  if (dom.gridInput) {
+    dom.gridInput.hidden = false;
+    const gridToggle = document.createElement('label');
+    gridToggle.className = 'navigation-cube-grid-toggle';
+    gridToggle.append(dom.gridInput, document.createTextNode('Grille'));
+    assemblyNavigationCubeOverlay.element.querySelector('.navigation-cube-card')?.append(gridToggle);
+  }
+  if (dom.showAnchorsInput) {
+    dom.showAnchorsInput.hidden = false;
+    const anchorsToggle = document.createElement('label');
+    anchorsToggle.className = 'navigation-cube-grid-toggle';
+    anchorsToggle.append(dom.showAnchorsInput, document.createTextNode('Afficher ancres'));
+    assemblyNavigationCubeOverlay.element.querySelector('.navigation-cube-card')?.append(anchorsToggle);
+  }
+  assemblyNavigationCubeOverlay.setActiveViewId(state.viewMode);
+  updateAnchorVisibility();
+}
+
+assemblyViewController = createAssemblyViewController({
+  camera,
+  orbitControls,
+  getTarget: () => (orbitControls.target.lengthSq() ? orbitControls.target.clone() : new THREE.Vector3(0, 0, 0)),
+  getActiveViewId: () => state.viewMode,
+  setActiveViewId: (viewId) => {
+    state.viewMode = normalizeViewId(viewId);
+  },
+  fitView: () => fitCameraToAll(false),
+  updateProjection: () => updateOrthographicFrustum(camera.userData.viewSize ?? 1000),
+  updateAfterViewChange: (viewId) => {
+    setActiveViewButton(viewId);
+    assemblyNavigationCubeOverlay?.setActiveViewId(viewId);
+    updateDimensionOverlay();
+  },
+});
 
 function animate() {
   requestAnimationFrame(animate);
@@ -1585,6 +1622,26 @@ function onCanvasDrop(event) {
   dom.canvas.classList.remove('catalog-drop-target');
   const position = getDropScenePosition(event);
   addCatalogPieceById(pieceId, position);
+}
+
+function shouldPreserveSelectionOnPointerDown(target) {
+  return Boolean(target?.closest('button, input, select, textarea, label, a'));
+}
+
+function onGlobalPointerDown(event) {
+  if (event.button !== 0) return;
+  if (state.drag) return;
+  if (!getSelectedInstance()) return;
+
+  const target = event.target;
+  if (target === renderer.domElement) {
+    const picked = pickInstance(event);
+    if (!picked) selectInstance(null);
+    return;
+  }
+
+  if (shouldPreserveSelectionOnPointerDown(target)) return;
+  selectInstance(null);
 }
 
 function onPointerDown(event) {
@@ -2199,43 +2256,47 @@ function populateHiddenCatalogSelect(pieces) {
 function renderShapePalette(pieces) {
   if (!dom.catalogPieceList) return;
   dom.catalogPieceList.innerHTML = '';
-  if (!pieces.length) {
-    const empty = document.createElement('div');
-    empty.className = 'catalog-empty-state';
-    empty.textContent = 'Aucune forme disponible pour cette famille/taille.';
-    dom.catalogPieceList.append(empty);
+
+  const selectedInstancePiece = getSceneSelectedCatalogPiece();
+  if (dom.catalogShapePalettePanel) dom.catalogShapePalettePanel.hidden = !selectedInstancePiece;
+  if (!selectedInstancePiece) {
     return;
   }
 
-  const selectedInstance = getSelectedInstance();
-  const selectedInstancePiece = selectedInstance ? getCatalogPieceById(selectedInstance.catalogPieceId) : null;
-
-  for (const piece of pieces) {
-    const shape = getShapeVariant(piece.shape_variant_id);
-    const size = getSize(piece.size_id);
+  const variantMap = getShapePaletteVariantMap(getShapePalettePieces(pieces));
+  for (let variantIndex = 1; variantIndex <= SHAPE_BUTTON_COUNT; variantIndex += 1) {
+    const piece = variantMap.get(variantIndex) ?? null;
+    const shape = getShapeVariant(piece?.shape_variant_id);
+    const size = getSize(piece?.size_id ?? selectedInstancePiece.size_id);
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'shape-palette-item catalog-piece-item';
-    item.dataset.pieceId = piece.id;
+    item.dataset.variantIndex = String(variantIndex);
     item.setAttribute('role', 'option');
-    item.title = `${getDisplayLabel(piece)}\nClic : appliquer cette forme à la pièce sélectionnée`;
+    item.title = piece
+      ? `${getDisplayLabel(piece)}\nClic : appliquer cette forme à la pièce sélectionnée`
+      : `Variante ${variantIndex} indisponible pour cette taille`;
 
-    const isActive = selectedInstancePiece?.shape_variant_id === piece.shape_variant_id
-      && selectedInstancePiece?.family_id === piece.family_id
-      && selectedInstancePiece?.size_id === piece.size_id;
+    const isActive = Boolean(piece)
+      && selectedInstancePiece.shape_variant_id === piece.shape_variant_id
+      && selectedInstancePiece.family_id === piece.family_id
+      && selectedInstancePiece.size_id === piece.size_id;
     item.setAttribute('aria-selected', String(isActive));
     if (isActive) item.classList.add('active');
+    if (!piece) item.disabled = true;
 
-    const icon = document.createElement('span');
+    const icon = document.createElement('img');
     icon.className = 'shape-icon';
-    icon.innerHTML = getShapeIconSvg(shape);
+    icon.src = SHAPE_BUTTON_ICONS[variantIndex - 1];
+    icon.alt = piece ? getVariantDisplayLabel(shape, size) : `Variante ${variantIndex}`;
+    icon.draggable = false;
 
     const label = document.createElement('span');
     label.className = 'shape-label';
-    label.textContent = getVariantDisplayLabel(shape, size);
+    label.textContent = piece ? getVariantDisplayLabel(shape, size) : `Variante ${variantIndex}`;
 
     item.append(icon, label);
-    item.addEventListener('click', () => applyCatalogShapeToSelectedInstance(piece.id));
+    if (piece) item.addEventListener('click', () => applyCatalogShapeToSelectedInstance(piece.id));
     dom.catalogPieceList.append(item);
   }
 }
@@ -2297,6 +2358,36 @@ function getFilteredCatalogPieces(pieces) {
   ));
   const standard = filtered.filter((piece) => getPieceProfileType(piece) === 'standard');
   return standard.length ? standard : filtered;
+}
+
+function syncAssemblyPaletteToSelectedInstance() {
+  if (IS_EDITOR) return;
+  const selectedPiece = getSceneSelectedCatalogPiece();
+  if (!selectedPiece) return;
+  state.selectedCatalogPieceId = selectedPiece.id;
+  state.catalogFilters.familyId = selectedPiece.family_id;
+  state.catalogFilters.sizeId = selectedPiece.size_id;
+  state.catalogFilters.profileType = getPieceProfileType(selectedPiece);
+}
+
+function getShapePalettePieces(pieces) {
+  const selectedPiece = getSceneSelectedCatalogPiece();
+  if (!selectedPiece) return [];
+  return pieces.filter((piece) => (
+    piece.family_id === selectedPiece.family_id
+    && piece.size_id === selectedPiece.size_id
+    && getPieceProfileType(piece) === 'standard'
+  ));
+}
+
+function getShapePaletteVariantMap(pieces) {
+  const variantMap = new Map();
+  for (const piece of pieces) {
+    const variantIndex = Number(getShapeVariant(piece.shape_variant_id)?.variant_index);
+    if (!Number.isInteger(variantIndex) || variantIndex < 1 || variantIndex > SHAPE_BUTTON_COUNT) continue;
+    if (!variantMap.has(variantIndex)) variantMap.set(variantIndex, piece);
+  }
+  return variantMap;
 }
 
 function getPieceProfileType(piece) {
@@ -2800,6 +2891,7 @@ async function init() {
   selectInstance(null);
   updateEmptyHint();
   bindEvents();
+  mountAssemblyNavigationCube();
   setAssemblyView('top', false);
   updateOrthographicFrustum(1000);
   animate();
@@ -2828,7 +2920,7 @@ function bindEvents() {
   dom.removePieceBtn.addEventListener('click', removeSelectedInstance);
   dom.clearSceneBtn.addEventListener('click', clearScene);
   dom.deselectBtn.addEventListener('click', () => selectInstance(null));
-  dom.exportBlueprintBtn.addEventListener('click', exportBlueprint);
+  dom.exportBlueprintBtn?.addEventListener('click', exportBlueprint);
 
   dom.colorInput.addEventListener('input', () => {
     const selected = getSelectedInstance();
@@ -2845,23 +2937,22 @@ function bindEvents() {
   dom.moveDownBtn.addEventListener('click', () => moveSelectedHeight(-getHeightStep()));
   dom.heightInput.addEventListener('change', () => setSelectedHeight(dom.heightInput.value));
 
-  dom.gridInput.addEventListener('change', () => {
+  dom.gridInput.checked = true;
+  dom.gridInput?.addEventListener('change', () => {
+    if (!ASSEMBLY_MAGNET_ENABLED) return;
     grid.visible = dom.gridInput.checked;
   });
 
-  dom.toggleAnchorsBtn?.addEventListener('click', () => {
-    state.showAnchors = !state.showAnchors;
+  dom.showAnchorsInput?.addEventListener('change', () => {
+    state.showAnchors = dom.showAnchorsInput.checked;
     updateAnchorVisibility();
   });
 
-  dom.resetViewBtn.addEventListener('click', resetView);
-  dom.viewTopBtn?.addEventListener('click', () => setAssemblyView('top', true));
-  dom.viewFrontBtn?.addEventListener('click', () => setAssemblyView('front', true));
-  dom.viewSideBtn?.addEventListener('click', () => setAssemblyView('side', true));
-  dom.fitSelectedBtn.addEventListener('click', () => fitCameraToObject(getSelectedInstance()?.group));
-  dom.fitAllBtn.addEventListener('click', fitCameraToAll);
-  dom.screenshotBtn.addEventListener('click', takeScreenshot);
+  dom.fitSelectedBtn?.addEventListener('click', () => fitCameraToObject(getSelectedInstance()?.group));
+  dom.fitAllBtn?.addEventListener('click', fitCameraToAll);
+  dom.screenshotBtn?.addEventListener('click', takeScreenshot);
 
+  document.addEventListener('pointerdown', onGlobalPointerDown, true);
   renderer.domElement.addEventListener('pointerdown', onPointerDown, true);
   renderer.domElement.addEventListener('pointermove', onPointerMove, true);
   renderer.domElement.addEventListener('pointerup', onPointerUp, true);
