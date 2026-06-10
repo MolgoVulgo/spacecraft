@@ -13,6 +13,28 @@
           <p>Assembleur public · catalogue verrouillé</p>
         </header>
 
+        <section id="creationsPanel" class="control-block creations-panel">
+          <button id="toggleCreationsPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="creationsPanelBody">
+            <span class="panel-toggle-title">Mes créations</span>
+            <span id="toggleCreationsPanelIcon" class="panel-toggle-icon">[-]</span>
+          </button>
+          <div id="creationsPanelBody" class="creations-panel-body">
+            <input id="shipNameInput" type="text" value="Unnamed" placeholder="Nom de la création" />
+            <div id="shipStorageStatus" class="summary-box storage-summary-box"></div>
+            <select id="shipList" size="5"></select>
+            <div class="button-grid compact">
+              <button id="newShipBtn" type="button">Nouveau</button>
+              <button id="openShipBtn" type="button">Ouvrir</button>
+              <button id="renameShipBtn" type="button">Renommer</button>
+              <button id="duplicateShipBtn" type="button">Dupliquer</button>
+              <button id="deleteShipBtn" type="button">Supprimer</button>
+              <button id="exportShipBtn" type="button">Exporter</button>
+              <button id="importShipBtn" type="button">Importer</button>
+            </div>
+            <input id="importShipInput" type="file" accept=".json,.spacecraft.json,application/json" hidden />
+          </div>
+        </section>
+
         <section class="control-block catalog-only-block assembly-catalog-controls">
           <label for="catalogFamilyFilter">Famille / matériau</label>
           <select id="catalogFamilyFilter"></select>
@@ -69,7 +91,7 @@
               <button id="fitSelectedBtn" type="button">Zoom sélection</button>
               <button id="fitAllBtn" type="button">Zoom scène</button>
               <button id="screenshotBtn" type="button">Capture PNG</button>
-              <button id="exportBlueprintBtn" type="button">Exporter blueprint</button>
+              <button id="exportBlueprintBtn" type="button">Exporter création</button>
             </div>
           </section>
 
