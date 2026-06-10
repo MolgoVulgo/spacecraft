@@ -142,6 +142,18 @@ export function createAssemblyInteractionController(options) {
     setState(INTERACTION_STATES.IDLE);
   }
 
+  function releaseCapturedPointer(pointerId = interaction.pointerId) {
+    if (pointerId == null) return;
+    canvas.releasePointerCapture?.(pointerId);
+  }
+
+  function cancelCurrentInteraction(event) {
+    if (interaction.state === INTERACTION_STATES.DRAG_SELECTED_OBJECT) endObjectDrag(event);
+    if (interaction.state === INTERACTION_STATES.CAMERA_ROTATE_OR_PAN) endCameraDrag(event);
+    releaseCapturedPointer();
+    resetInteraction();
+  }
+
   function beginMarquee(event) {
     interaction.pointerId = event.pointerId;
     interaction.startPoint = getPointInContainer(event, viewportStage);
@@ -162,7 +174,7 @@ export function createAssemblyInteractionController(options) {
     const entities = collectMarqueeSelection(rect, 3);
     if (entities.length) selectEntities(entities);
     else clearSelection();
-    canvas.releasePointerCapture?.(event.pointerId);
+    releaseCapturedPointer(event.pointerId);
     resetInteraction();
   }
 
@@ -188,6 +200,8 @@ export function createAssemblyInteractionController(options) {
   }
 
   function handleRightPointerDown(event) {
+    interaction.pointerId = event.pointerId;
+    canvas.setPointerCapture?.(event.pointerId);
     beginCameraDrag(event);
     setState(INTERACTION_STATES.CAMERA_ROTATE_OR_PAN);
     return false;
@@ -223,7 +237,7 @@ export function createAssemblyInteractionController(options) {
   function onPointerUp(event) {
     if (interaction.state === INTERACTION_STATES.DRAG_SELECTED_OBJECT) {
       if (event.pointerId !== interaction.pointerId) return false;
-      canvas.releasePointerCapture?.(event.pointerId);
+      releaseCapturedPointer(event.pointerId);
       endObjectDrag(event);
       resetInteraction();
       return true;
@@ -233,7 +247,8 @@ export function createAssemblyInteractionController(options) {
       finishMarquee(event);
       return true;
     }
-    if (interaction.state === INTERACTION_STATES.CAMERA_ROTATE_OR_PAN && event.button === 2) {
+    if (interaction.state === INTERACTION_STATES.CAMERA_ROTATE_OR_PAN && event.pointerId === interaction.pointerId) {
+      releaseCapturedPointer(event.pointerId);
       endCameraDrag(event);
       resetInteraction();
       return false;
@@ -242,10 +257,15 @@ export function createAssemblyInteractionController(options) {
   }
 
   function onPointerCancel(event) {
-    if (interaction.state === INTERACTION_STATES.DRAG_SELECTED_OBJECT) endObjectDrag(event);
-    if (interaction.state === INTERACTION_STATES.CAMERA_ROTATE_OR_PAN) endCameraDrag(event);
-    canvas.releasePointerCapture?.(interaction.pointerId);
-    resetInteraction();
+    cancelCurrentInteraction(event);
+  }
+
+  function onWindowBlur() {
+    cancelCurrentInteraction({ type: 'blur' });
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState === 'hidden') cancelCurrentInteraction({ type: 'visibilitychange' });
   }
 
   function onKeyDown(event) {
@@ -265,6 +285,8 @@ export function createAssemblyInteractionController(options) {
   }
 
   orbitControls.enabled = true;
+  window.addEventListener('blur', onWindowBlur);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 
   return {
     onPointerDown,
@@ -273,5 +295,10 @@ export function createAssemblyInteractionController(options) {
     onPointerCancel,
     onKeyDown,
     getState: () => interaction.state,
+    destroy() {
+      window.removeEventListener('blur', onWindowBlur);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      cancelCurrentInteraction({ type: 'destroy' });
+    },
   };
 }

@@ -8,6 +8,11 @@ import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { createNavigationCubeViewApi } from './navigation-cube.js';
 import { createAssemblyPersistenceController } from './assembly-persistence-controller.js';
 import { createAssemblyInteractionController } from './assembly-drag-controller.js';
+import { createAssemblyMovementController } from './assembly-movement.js';
+import { validateCatalogData } from './catalog-validator.js';
+import { createCommandStack } from './history/command-stack.js';
+import { createMoveCommand } from './history/commands/move-command.js';
+import { resolveRuntimePath } from './runtime-paths.js';
 import { buildShipCreation } from './ship-creation.js';
 import {
   LEGACY_ASSEMBLY_SIDE_VIEW_ID,
@@ -17,17 +22,17 @@ import {
   normalizeViewId,
 } from './view-controller.js';
 
-const CATALOG_URL = '/data/4x3x1_catalog.json';
+const CATALOG_URL = resolveRuntimePath('data/4x3x1_catalog.json');
 const DEFAULT_COLOR = '#d46a2c';
 const COLLISION_EPSILON = 1e-5;
 const DRAG_WORLD_LIMIT = 20000;
 const SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER = 1.25;
 const SHAPE_BUTTON_COUNT = 14;
-const SHAPE_BUTTON_ICONS = Array.from({ length: SHAPE_BUTTON_COUNT }, (_, index) => `/ui/shape-buttons/button_${String(index + 1).padStart(2, '0')}.png`);
+const SHAPE_BUTTON_ICONS = Array.from({ length: SHAPE_BUTTON_COUNT }, (_, index) => resolveRuntimePath(`ui/shape-buttons/button_${String(index + 1).padStart(2, '0')}.png`));
 const SYMMETRY_BUTTON_ICONS = {
-  width: '/ui/shape-buttons/symmetry_width.png',
-  length: '/ui/shape-buttons/symmetry_length.png',
-  height: '/ui/shape-buttons/symmetry_height.png',
+  width: resolveRuntimePath('ui/shape-buttons/symmetry_width.png'),
+  length: resolveRuntimePath('ui/shape-buttons/symmetry_length.png'),
+  height: resolveRuntimePath('ui/shape-buttons/symmetry_height.png'),
 };
 const THEME_COLORS = {
   anchor: 0xd82020,
@@ -166,6 +171,8 @@ orbitControls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
 let assemblyViewController = null;
 let assemblyNavigationCubeOverlay = null;
 let assemblyInteractionController = null;
+let assemblyMovementController = null;
+const historyStack = createCommandStack({ limit: 10 });
 
 const rootGroup = new THREE.Group();
 scene.add(rootGroup);
@@ -266,7 +273,6 @@ function setSelectedCatalogPiece(pieceId) {
   state.catalogFilters.profileType = getPieceProfileType(piece);
   if (dom.catalogPieceSelect) dom.catalogPieceSelect.value = pieceId;
   renderCatalogPieceOptions();
-  renderCatalogEditors();
 }
 
 function getFamily(id) {
@@ -738,7 +744,6 @@ function addCatalogPieceById(pieceId, position = null) {
   state.selectedCatalogPieceId = catalogPiece.id;
   if (dom.catalogPieceSelect) dom.catalogPieceSelect.value = catalogPiece.id;
   renderCatalogPieceOptions();
-  renderCatalogEditors();
   const instance = createInstance(catalogPiece, position ? { position } : {});
   if (instance) {
     fitCameraToObject(instance.group, false);
@@ -804,7 +809,6 @@ function selectPiece(id) {
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
-  renderCatalogEditors();
   updateStats();
   updateSelectionBox();
 }
@@ -814,7 +818,6 @@ function selectAssemblyGroup(groupId) {
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
-  renderCatalogEditors();
   updateStats();
   updateSelectionBox();
 }
@@ -824,7 +827,6 @@ function selectPieceMulti(ids = []) {
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
-  renderCatalogEditors();
   updateStats();
   updateSelectionBox();
 }
@@ -995,9 +997,10 @@ function refreshInstanceList() {
 }
 
 function updateSelectionUi() {
-  const selected = getSelectedInstance();
-  const selectedAssemblyGroup = getSelectedAssemblyGroup();
-  const hasSelected = Boolean(selected || selectedAssemblyGroup);
+  const selectedBatch = getSelectionBatch();
+  const selected = selectedBatch.length === 1 ? getSelectedInstance() : null;
+  const selectedAssemblyGroup = selectedBatch.length === 1 ? getSelectedAssemblyGroup() : null;
+  const hasSelected = selectedBatch.length > 0;
   for (const element of selectedControls) element.disabled = !hasSelected;
 
   if (!hasSelected) {
@@ -1009,6 +1012,12 @@ function updateSelectionUi() {
   if (selected) {
     dom.colorInput.value = `#${selected.material.color.getHexString()}`;
     setSymmetryButtonState(selected.symmetry);
+    return;
+  }
+
+  if (!selectedAssemblyGroup) {
+    dom.colorInput.value = DEFAULT_COLOR;
+    setSymmetryButtonState({ length: false, width: false, height: false });
     return;
   }
 
@@ -1218,6 +1227,12 @@ function syncGroupInstanceWorldPositions(group, origin = group.origin) {
 function refreshAssemblyGroupRuntime(group) {
   group.bbox = computeGroupBoundingBox(group, group.origin);
   group.pivot = computeBoundingCenter(group.bbox);
+}
+
+function setGroupWorldPosition(group, nextOrigin) {
+  group.origin.copy(nextOrigin);
+  refreshAssemblyGroupRuntime(group);
+  syncGroupInstanceWorldPositions(group);
 }
 
 function getGroupExternalAnchors(group, origin = group.origin) {
@@ -1477,6 +1492,64 @@ function markShipDirty() {
   task?.catch((error) => {
     setMessage(error?.message ?? 'Autosave impossible.');
   });
+}
+
+function getHistoryEntitySelection(entities = []) {
+  if (entities.length) return entities.map((entity) => ({ type: entity.type, id: entity.id }));
+  const selection = getSelectionBatch();
+  if (selection.length) return selection.map((entity) => ({ type: entity.type, id: entity.id }));
+  return [];
+}
+
+function captureMovementSnapshot(entities = []) {
+  return getHistoryEntitySelection(entities).map((entity) => {
+    if (entity.type === 'group') {
+      const group = getAssemblyGroupById(entity.id);
+      return group ? {
+        type: 'group',
+        id: group.id,
+        position: vectorToPlain(group.origin),
+      } : null;
+    }
+    const instance = getInstanceById(entity.id);
+    return instance ? {
+      type: 'piece',
+      id: instance.id,
+      position: vectorToPlain(instance.group.position),
+    } : null;
+  }).filter(Boolean);
+}
+
+function applyMovementSnapshot(snapshot = []) {
+  for (const item of snapshot) {
+    const position = cloneVector3Like(item.position);
+    if (item.type === 'group') {
+      const group = getAssemblyGroupById(item.id);
+      if (!group) continue;
+      setGroupWorldPosition(group, position);
+      continue;
+    }
+    const instance = getInstanceById(item.id);
+    if (!instance) continue;
+    instance.group.position.copy(position);
+  }
+  updateAttachmentStates();
+  updateStats();
+  updateSelectionBox();
+  setMessage('');
+  markShipDirty();
+}
+
+function recordMovementCommand(before, after, entities = [], label = 'Move selection') {
+  if (!before?.length || !after?.length) return false;
+  if (JSON.stringify(before) === JSON.stringify(after)) return false;
+  return historyStack.push(createMoveCommand({
+    label,
+    affectedIds: entities.map((entity) => entity.id),
+    before,
+    after,
+    applySnapshot: applyMovementSnapshot,
+  }));
 }
 
 function runPersistenceTask(task, fallbackMessage) {
@@ -1821,7 +1894,6 @@ function refreshSelectionAfterChange() {
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
-  renderCatalogEditors();
   updateStats();
   updateSelectionBox();
 }
@@ -2402,25 +2474,7 @@ function resolveVerticalCollisionOriginForGroup(group, targetOrigin) {
 }
 
 function tryMoveAssemblyGroup(group, targetOrigin, options = {}) {
-  const resolvedOrigin = options.autoVertical
-    ? resolveVerticalCollisionOriginForGroup(group, targetOrigin)
-    : targetOrigin;
-  if (!isSaneWorldPosition(resolvedOrigin)) {
-    setMessage('Déplacement refusé : position de groupe invalide.');
-    return false;
-  }
-  if (!isGroupPlacementValid(group, resolvedOrigin)) {
-    setMessage('Déplacement groupe refusé : collision avec une autre pièce.');
-    return false;
-  }
-  group.origin.copy(resolvedOrigin);
-  refreshAssemblyGroupRuntime(group);
-  syncGroupInstanceWorldPositions(group);
-  updateAttachmentStates();
-  updateStats();
-  updateSelectionBox();
-  setMessage('');
-  return true;
+  return assemblyMovementController?.tryMoveAssemblyGroup(group, targetOrigin, options) ?? false;
 }
 
 function tryMoveInstance(instance, targetPosition, reason = 'Déplacement refusé : collision avec une autre pièce.', options = {}) {
@@ -2540,71 +2594,31 @@ function tryMoveLooseSelection(instances, delta) {
 }
 
 function tryMoveSelectionBatch(entities, delta) {
-  if (!entities.length) return false;
-  const ignoredInstanceIds = new Set();
-  const candidateBoxes = [];
-  const groupOrigins = new Map();
-  const looseInstances = [];
-
-  for (const entity of entities) {
-    if (entity.type === 'group') {
-      const group = getAssemblyGroupById(entity.id);
-      if (!group) continue;
-      const nextOrigin = group.origin.clone().add(delta);
-      groupOrigins.set(group.id, nextOrigin);
-      for (const child of group.children) {
-        ignoredInstanceIds.add(child.instanceId);
-      }
-      candidateBoxes.push(...getGroupChildBoxes(group, nextOrigin));
-      continue;
-    }
-
-    const instance = getInstanceById(entity.id);
-    if (!instance) continue;
-    ignoredInstanceIds.add(instance.id);
-    looseInstances.push(instance);
-    candidateBoxes.push(getInstanceBox(instance, instance.group.position.clone().add(delta)));
-  }
-
-  if (!candidateBoxes.length) return false;
-  if (collidesBoxesWithScene(candidateBoxes, { ignoredInstanceIds })) {
-    setMessage('Déplacement refusé : collision avec une autre pièce.');
-    return false;
-  }
-
-  for (const [groupId, nextOrigin] of groupOrigins) {
-    const group = getAssemblyGroupById(groupId);
-    if (!group) continue;
-    setGroupWorldPosition(group, nextOrigin);
-    refreshAssemblyGroupRuntime(group);
-  }
-  for (const instance of looseInstances) {
-    instance.group.position.add(delta);
-  }
-
-  updateAttachmentStates();
-  updateStats();
-  updateSelectionBox();
-  setMessage('');
-  return true;
+  return assemblyMovementController?.tryMoveSelectionBatch(entities, delta) ?? false;
 }
 
 function moveSelectedByDelta(delta) {
   const selectedEntities = getSelectionBatch();
   if (!selectedEntities.length) return;
+  const before = captureMovementSnapshot(selectedEntities);
 
   if (selectedEntities.length > 1) {
     const snappedDelta = delta.clone();
     snapPositionToHalfUnit(snappedDelta);
-    if (tryMoveSelectionBatch(selectedEntities, snappedDelta)) markShipDirty();
+    if (tryMoveSelectionBatch(selectedEntities, snappedDelta)) {
+      const after = captureMovementSnapshot(selectedEntities);
+      if (recordMovementCommand(before, after, selectedEntities, 'Move selection')) markShipDirty();
+    }
     return;
   }
 
   const selectedGroup = getSelectedAssemblyGroup();
   if (selectedGroup) {
-    const before = selectedGroup.origin.clone();
     const next = snapPositionToHalfUnit(selectedGroup.origin.clone().add(delta.clone()));
-    if (tryMoveAssemblyGroup(selectedGroup, next) && !selectedGroup.origin.equals(before)) markShipDirty();
+    if (tryMoveAssemblyGroup(selectedGroup, next)) {
+      const after = captureMovementSnapshot(selectedEntities);
+      if (recordMovementCommand(before, after, selectedEntities, 'Move group')) markShipDirty();
+    }
     return;
   }
 
@@ -2612,16 +2626,19 @@ function moveSelectedByDelta(delta) {
   if (selectedLooseInstances.length > 1) {
     const snappedDelta = delta.clone();
     snapPositionToHalfUnit(snappedDelta);
-    if (tryMoveLooseSelection(selectedLooseInstances, snappedDelta)) markShipDirty();
+    if (tryMoveLooseSelection(selectedLooseInstances, snappedDelta)) {
+      const after = captureMovementSnapshot(selectedEntities);
+      if (recordMovementCommand(before, after, selectedEntities, 'Move selection')) markShipDirty();
+    }
     return;
   }
 
   const selected = getSelectedInstance();
   if (!selected) return;
-  const before = selected.group.position.clone();
   const next = snapPositionToHalfUnit(selected.group.position.clone().add(delta.clone()));
-  if (tryMoveInstance(selected, next, 'Déplacement refusé : collision avec une autre pièce.') && !selected.group.position.equals(before)) {
-    markShipDirty();
+  if (tryMoveInstance(selected, next, 'Déplacement refusé : collision avec une autre pièce.')) {
+    const after = captureMovementSnapshot(selectedEntities);
+    if (recordMovementCommand(before, after, selectedEntities, 'Move piece')) markShipDirty();
   }
 }
 
@@ -2732,17 +2749,22 @@ function beginDragFromPick(event, picked, pickedGroup, inputType = 'pointer', dr
 
   if (!intersectDragPlane(event, dragHit)) return false;
 
+  const historyEntities = dragEntities.length
+    ? dragEntities.map((entity) => ({ type: entity.type, id: entity.id }))
+    : [{ type: pickedGroup ? 'group' : 'piece', id: pickedGroup?.id ?? picked.id }];
+
   state.drag = {
     inputType,
     pointerId: inputType === 'pointer' ? event.pointerId : null,
     entityType: pickedGroup ? 'group' : 'piece',
     instanceId: picked.id,
     groupId: pickedGroup?.id ?? null,
-    entities: dragEntities.map((entity) => ({ type: entity.type, id: entity.id })),
+    entities: historyEntities,
     startHit: dragHit.clone(),
     startPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
     offset: (pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone()).sub(dragHit),
     lastValidPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
+    historyBefore: captureMovementSnapshot(historyEntities),
   };
 
   orbitControls.enabled = false;
@@ -2814,13 +2836,20 @@ function onPointerUp(event) {
   event.stopImmediatePropagation();
 
   const moved = !state.drag.startPosition.equals(state.drag.lastValidPosition);
+  const historyBefore = state.drag.historyBefore;
+  const historyEntities = state.drag.entities;
   dom.canvas.releasePointerCapture?.(event.pointerId);
   state.drag = null;
   orbitControls.enabled = true;
   dom.canvas.classList.remove('dragging-piece');
   updateStats();
   updateSelectionBox();
-  if (moved) markShipDirty();
+  if (moved) {
+    const after = captureMovementSnapshot(historyEntities);
+    if (recordMovementCommand(historyBefore, after, historyEntities, historyEntities.length === 1 && historyEntities[0].type === 'group' ? 'Move group' : 'Move selection')) {
+      markShipDirty();
+    }
+  }
 }
 
 function onMouseMove(event) {
@@ -2848,12 +2877,19 @@ function onMouseUp(event) {
   event.stopImmediatePropagation();
 
   const moved = !state.drag.startPosition.equals(state.drag.lastValidPosition);
+  const historyBefore = state.drag.historyBefore;
+  const historyEntities = state.drag.entities;
   state.drag = null;
   orbitControls.enabled = true;
   dom.canvas.classList.remove('dragging-piece');
   updateStats();
   updateSelectionBox();
-  if (moved) markShipDirty();
+  if (moved) {
+    const after = captureMovementSnapshot(historyEntities);
+    if (recordMovementCommand(historyBefore, after, historyEntities, historyEntities.length === 1 && historyEntities[0].type === 'group' ? 'Move group' : 'Move selection')) {
+      markShipDirty();
+    }
+  }
 }
 
 
@@ -2882,302 +2918,6 @@ function uniqueId(base, existingIds) {
 
 function pad2(value) {
   return String(value).padStart(2, '0');
-}
-
-function getNextVariantIndex(sizeId) {
-  const indexes = (state.catalog.shape_variants ?? [])
-    .filter((shape) => shape.size_id === sizeId)
-    .map((shape) => Number(shape.variant_index) || 0);
-  return indexes.length ? Math.max(...indexes) + 1 : 1;
-}
-
-function getShapeVariantLabel(shape) {
-  if (!shape) return 'variante inconnue';
-  return `${shape.id} · ${shape.label ?? `v${pad2(shape.variant_index)}`} · ${shape.generation?.mode ?? 'mode ?'}`;
-}
-
-function populateCreationForms() {
-  if (!IS_EDITOR) return;
-  renderBasicSelect(dom.variantSizeSelect, state.catalog.sizes ?? [], (size) => size.id, (size) => size.label ?? size.id);
-  renderBasicSelect(dom.pieceFamilySelect, state.catalog.families ?? [], (family) => family.id, (family) => family.label_fr ?? family.id);
-  renderBasicSelect(dom.pieceSizeSelect, state.catalog.sizes ?? [], (size) => size.id, (size) => size.label ?? size.id);
-  renderPieceShapeSelect();
-  updateCreatePieceDefaultLabel();
-}
-
-function renderBasicSelect(select, items, getValue, getLabel, selectedValue = select?.value) {
-  if (!select) return;
-  select.innerHTML = '';
-  for (const item of items) {
-    const option = document.createElement('option');
-    option.value = getValue(item);
-    option.textContent = getLabel(item);
-    option.selected = option.value === selectedValue;
-    select.append(option);
-  }
-}
-
-function renderPieceShapeSelect() {
-  if (!IS_EDITOR || !dom.pieceSizeSelect || !dom.pieceShapeSelect) return;
-  const sizeId = dom.pieceSizeSelect.value;
-  const shapes = (state.catalog.shape_variants ?? [])
-    .filter((shape) => shape.size_id === sizeId)
-    .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0));
-  renderBasicSelect(dom.pieceShapeSelect, shapes, (shape) => shape.id, getShapeVariantLabel);
-}
-
-function updateCreatePieceDefaultLabel() {
-  if (!IS_EDITOR || !dom.pieceFamilySelect || !dom.pieceSizeSelect || !dom.pieceShapeSelect || !dom.pieceProfileTypeInput || !dom.pieceLabelInput) return;
-  const family = getFamily(dom.pieceFamilySelect.value);
-  const size = getSize(dom.pieceSizeSelect.value);
-  const shape = getShapeVariant(dom.pieceShapeSelect.value);
-  const profileType = slugifyId(dom.pieceProfileTypeInput.value || 'standard');
-  dom.pieceLabelInput.placeholder = [
-    family?.label_fr ?? dom.pieceFamilySelect.value,
-    size?.label ?? dom.pieceSizeSelect.value,
-    shape ? `v${pad2(shape.variant_index)}` : '',
-    profileType !== 'standard' ? profileType : '',
-  ].filter(Boolean).join(' ');
-}
-
-function createVariantFromForm() {
-  if (!IS_EDITOR) return;
-  const sizeId = dom.variantSizeSelect.value;
-  const size = getSize(sizeId);
-  if (!size) {
-    setMessage('Création variante refusée : taille introuvable.');
-    return;
-  }
-
-  const index = getNextVariantIndex(sizeId);
-  const id = uniqueId(`shape_${sizeId}_v${pad2(index)}`, new Set((state.catalog.shape_variants ?? []).map((shape) => shape.id)));
-  const base = getBaseGenerationFromForm(size);
-  const shape = {
-    id,
-    size_id: sizeId,
-    variant_index: index,
-    label: dom.variantLabelInput.value.trim() || `${size.label ?? sizeId} variant ${pad2(index)}`,
-    shape_family: slugifyId(dom.variantShapeFamilyInput.value || 'block'),
-    simplified: true,
-    fidelity: {
-      target: 'functional_silhouette',
-      ignore_cosmetic_details: true,
-    },
-    generation: base,
-    allowed_symmetry: {
-      length: true,
-      width: true,
-      height: true,
-    },
-    anchors: createDefaultAnchors(size),
-    collision: {
-      mode: 'generated_from_shape',
-      precision: 'simplified',
-      allow_overlap: false,
-    },
-    status: 'draft',
-    metadata: {
-      source: 'web_editor',
-      notes: [],
-    },
-  };
-
-  state.catalog.shape_variants ??= [];
-  state.catalog.shape_variants.push(shape);
-  rebuildRepository();
-  renderPieceShapeSelect();
-  dom.pieceSizeSelect.value = sizeId;
-  renderPieceShapeSelect();
-  dom.pieceShapeSelect.value = id;
-  dom.variantLabelInput.value = '';
-  updateCreatePieceDefaultLabel();
-  renderValidationReport();
-  setMessage(`Variante créée : ${id}.`);
-}
-
-function getBaseGenerationFromForm(size) {
-  const value = dom.variantBaseTypeSelect.value;
-  const bounds = { length: size.dimensions.length, width: size.dimensions.width, height: size.dimensions.height };
-  if (value === 'wedge_length_front_to_back') {
-    return {
-      mode: 'primitive_stack',
-      base: { type: 'wedge', bounds, slope_axis: 'length', slope_direction: 'front_to_back' },
-      operations: [],
-    };
-  }
-  if (value === 'wedge_width_left_to_right') {
-    return {
-      mode: 'primitive_stack',
-      base: { type: 'wedge', bounds, slope_axis: 'width', slope_direction: 'left_to_right' },
-      operations: [],
-    };
-  }
-  return {
-    mode: 'primitive_stack',
-    base: { type: 'box', bounds },
-    operations: [],
-  };
-}
-
-function createDefaultAnchors(size) {
-  const { length, width, height } = size.dimensions;
-  const mid = { x: length / 2, y: width / 2, z: height / 2 };
-  const defs = [
-    ['length_min', { x: 0, y: mid.y, z: mid.z }, { x: -1, y: 0, z: 0 }],
-    ['length_max', { x: length, y: mid.y, z: mid.z }, { x: 1, y: 0, z: 0 }],
-    ['width_min', { x: mid.x, y: 0, z: mid.z }, { x: 0, y: -1, z: 0 }],
-    ['width_max', { x: mid.x, y: width, z: mid.z }, { x: 0, y: 1, z: 0 }],
-    ['height_min', { x: mid.x, y: mid.y, z: 0 }, { x: 0, y: 0, z: -1 }],
-    ['height_max', { x: mid.x, y: mid.y, z: height }, { x: 0, y: 0, z: 1 }],
-  ];
-  return defs.map(([face, position, normal], index) => ({
-    id: `anchor_${face}_${index + 1}`,
-    position,
-    normal,
-    face,
-    type: 'standard',
-    enabled: true,
-    status: 'draft',
-  }));
-}
-
-function duplicateSelectedVariant() {
-  if (!IS_EDITOR) return;
-  const selectedPiece = getSelectedCatalogPiece();
-  const source = getShapeVariant(selectedPiece?.shape_variant_id);
-  if (!source) {
-    setMessage('Duplication variante refusée : aucune variante sélectionnée.');
-    return;
-  }
-
-  const index = getNextVariantIndex(source.size_id);
-  const id = uniqueId(`shape_${source.size_id}_v${pad2(index)}`, new Set((state.catalog.shape_variants ?? []).map((shape) => shape.id)));
-  const clone = structuredClone(source);
-  clone.id = id;
-  clone.variant_index = index;
-  clone.label = `${source.label ?? source.id} copie ${pad2(index)}`;
-  clone.status = 'draft';
-  clone.metadata = {
-    ...(clone.metadata ?? {}),
-    source: 'web_editor_duplicate',
-    duplicated_from: source.id,
-  };
-
-  state.catalog.shape_variants.push(clone);
-  rebuildRepository();
-  dom.pieceSizeSelect.value = clone.size_id;
-  renderPieceShapeSelect();
-  dom.pieceShapeSelect.value = clone.id;
-  updateCreatePieceDefaultLabel();
-  renderValidationReport();
-  setMessage(`Variante dupliquée : ${id}.`);
-}
-
-function createCatalogPieceFromForm() {
-  if (!IS_EDITOR) return;
-  const familyId = dom.pieceFamilySelect.value;
-  const sizeId = dom.pieceSizeSelect.value;
-  const shapeId = dom.pieceShapeSelect.value;
-  const profileType = slugifyId(dom.pieceProfileTypeInput.value || 'standard');
-  const family = getFamily(familyId);
-  const size = getSize(sizeId);
-  const shape = getShapeVariant(shapeId);
-
-  if (!family || !size || !shape) {
-    setMessage('Création pièce refusée : famille, taille ou variante introuvable.');
-    return;
-  }
-  if (shape.size_id !== sizeId) {
-    setMessage(`Création pièce refusée : la variante ${shape.id} appartient à ${shape.size_id}, pas ${sizeId}.`);
-    return;
-  }
-
-  const spec = ensureSpecProfile(familyId, sizeId, profileType);
-  const recipe = ensureRecipe(spec.id, familyId, sizeId, profileType);
-  const variantCode = `v${pad2(shape.variant_index)}`;
-  const idBase = `piece_${familyId}_${sizeId}_${variantCode}_${profileType}`;
-  const existingIds = new Set((state.catalog.catalog_pieces ?? []).map((piece) => piece.id));
-  const id = uniqueId(idBase, existingIds);
-  const label = dom.pieceLabelInput.value.trim() || dom.pieceLabelInput.placeholder || `${family.label_fr ?? familyId} ${size.label ?? sizeId} ${variantCode}`;
-
-  const catalogPiece = {
-    id,
-    label_fr: label,
-    family_id: familyId,
-    size_id: sizeId,
-    shape_variant_id: shapeId,
-    spec_profile_id: spec.id,
-    recipe_id: recipe.id,
-    fixed_catalog_entry: true,
-    availability: {
-      status: 'unknown',
-      unlock: null,
-    },
-    metadata: {
-      source: 'web_editor',
-      notes: [],
-    },
-  };
-
-  state.catalog.catalog_pieces ??= [];
-  state.catalog.catalog_pieces.push(catalogPiece);
-  rebuildRepository();
-  renderCatalogPieceOptions();
-  dom.catalogPieceSelect.value = id;
-  renderCatalogEditors();
-  dom.pieceLabelInput.value = '';
-  setMessage(`Entrée catalogue créée : ${id}.`);
-}
-
-function ensureSpecProfile(familyId, sizeId, profileType) {
-  const id = `spec_${familyId}_${sizeId}_${profileType}`;
-  let spec = getSpecProfile(id);
-  if (spec) return spec;
-
-  const definitions = state.catalog.definitions?.spec_fields ?? {};
-  spec = {
-    id,
-    family_id: familyId,
-    size_id: sizeId,
-    profile_type: profileType,
-    label_fr: `${getFamily(familyId)?.label_fr ?? familyId} ${getSize(sizeId)?.label ?? sizeId} ${profileType}`,
-    specs: Object.fromEntries(Object.entries(definitions).map(([fieldId, definition]) => [
-      fieldId,
-      { value: null, unit: definition.unit ?? null, status: 'unknown' },
-    ])),
-    metadata: {
-      source: 'web_editor_placeholder',
-      notes: [],
-    },
-  };
-  state.catalog.spec_profiles ??= [];
-  state.catalog.spec_profiles.push(spec);
-  rebuildRepository();
-  return spec;
-}
-
-function ensureRecipe(specProfileId, familyId, sizeId, profileType) {
-  const id = `recipe_${familyId}_${sizeId}_${profileType}`;
-  let recipe = getRecipe(id);
-  if (recipe) return recipe;
-
-  recipe = {
-    id,
-    output_spec_profile_id: specProfileId,
-    cost: { value: null, currency: 'C', status: 'unknown' },
-    duration: { value: null, unit: state.catalog.units?.craft_duration ?? 'su', status: 'unknown' },
-    station: { id: 'unknown', label_fr: 'Inconnue', status: 'unknown' },
-    ingredients: [],
-    status: 'unknown',
-    metadata: {
-      source: 'web_editor_placeholder',
-      notes: [],
-    },
-  };
-  state.catalog.recipes ??= [];
-  state.catalog.recipes.push(recipe);
-  rebuildRepository();
-  return recipe;
 }
 
 function refreshInstancesUsingShape(shapeId) {
@@ -3276,7 +3016,6 @@ function renderAssemblyCatalogFilters(pieces) {
     state.catalogFilters.sizeId = null;
     state.catalogFilters.profileType = 'standard';
     renderCatalogPieceOptions();
-    renderCatalogEditors();
   });
 
   const familyPieces = pieces.filter((piece) => piece.family_id === state.catalogFilters.familyId);
@@ -3296,7 +3035,6 @@ function renderAssemblyCatalogFilters(pieces) {
     state.catalogFilters.sizeId = value;
     state.catalogFilters.profileType = 'standard';
     renderCatalogPieceOptions();
-    renderCatalogEditors();
   });
 
   renderSizeList(sizeOptions);
@@ -3341,7 +3079,6 @@ function renderSizeList(sizeOptions) {
       state.catalogFilters.sizeId = option.value;
       state.catalogFilters.profileType = 'standard';
       renderCatalogPieceOptions();
-      renderCatalogEditors();
     });
 
     button.addEventListener('dblclick', () => {
@@ -3358,7 +3095,6 @@ function renderSizeList(sizeOptions) {
       event.dataTransfer.setData('text/plain', piece.id);
       event.dataTransfer.setData('application/x-spacecraft-catalog-piece', piece.id);
       renderCatalogPieceOptions();
-      renderCatalogEditors();
     });
 
     dom.catalogSizeList.append(button);
@@ -3500,7 +3236,6 @@ function applyCatalogShapeToSelectedInstance(pieceId) {
   state.selectedCatalogPieceId = nextPiece.id;
   refreshInstanceList();
   renderCatalogPieceOptions();
-  renderCatalogEditors();
   updateStats();
   updateSelectionBox();
   setMessage('Forme appliquée à la pièce sélectionnée.');
@@ -3608,377 +3343,6 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-}
-
-function renderCatalogEditors() {
-  const catalogPiece = getSelectedCatalogPiece();
-  if (!catalogPiece) return;
-  const family = getFamily(catalogPiece.family_id);
-  const size = getSize(catalogPiece.size_id);
-  const shape = getShapeVariant(catalogPiece.shape_variant_id);
-  const spec = getSpecProfile(catalogPiece.spec_profile_id);
-  const recipe = getRecipe(catalogPiece.recipe_id);
-
-  if (!IS_EDITOR) return;
-  renderShapeEditor(shape);
-  renderSpecEditor(spec);
-  renderRecipeEditor(recipe);
-  renderValidationReport();
-}
-
-
-function renderShapeEditor(shape) {
-  if (!IS_EDITOR || !dom.shapeEditor) return;
-  if (!shape) {
-    dom.shapeEditor.textContent = 'Variante introuvable.';
-    return;
-  }
-
-  dom.shapeEditor.innerHTML = '';
-
-  const idInfo = document.createElement('div');
-  idInfo.className = 'editor-note';
-  idInfo.textContent = `id: ${shape.id} · taille: ${shape.size_id} · index: ${shape.variant_index}`;
-  dom.shapeEditor.append(idInfo);
-
-  const labelInput = document.createElement('input');
-  labelInput.type = 'text';
-  labelInput.value = shape.label ?? '';
-  labelInput.addEventListener('change', () => {
-    shape.label = labelInput.value.trim() || shape.id;
-    renderCatalogPieceOptions();
-    renderCatalogEditors();
-  });
-  dom.shapeEditor.append(labelBlock('Label variante', labelInput));
-
-  const familyInput = document.createElement('input');
-  familyInput.type = 'text';
-  familyInput.value = shape.shape_family ?? '';
-  familyInput.addEventListener('change', () => {
-    shape.shape_family = slugifyId(familyInput.value || 'block');
-    renderValidationReport();
-  });
-  dom.shapeEditor.append(labelBlock('Famille forme', familyInput));
-
-  const baseType = document.createElement('select');
-  const currentBase = getShapeBaseTypeValue(shape);
-  for (const [value, label] of [
-    ['legacy_mesh', 'Mesh legacy'],
-    ['box', 'Bloc plein'],
-    ['wedge_length_front_to_back', 'Pente longueur'],
-    ['wedge_width_left_to_right', 'Pente largeur'],
-  ]) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = label;
-    option.selected = value === currentBase;
-    baseType.append(option);
-  }
-  baseType.addEventListener('change', () => {
-    if (baseType.value === 'legacy_mesh' && shape.preview_mesh) {
-      shape.generation = {
-        ...(shape.generation ?? {}),
-        mode: 'legacy_mesh',
-      };
-    } else {
-      shape.generation = getGenerationFromBaseType(shape.size_id, baseType.value);
-      delete shape.preview_mesh;
-      delete shape.mesh_stats;
-      delete shape.bounds;
-    }
-    refreshInstancesUsingShape(shape.id);
-    renderCatalogEditors();
-  });
-  dom.shapeEditor.append(labelBlock('Géométrie base', baseType));
-
-  const statusSelect = document.createElement('select');
-  for (const value of ['confirmed', 'draft', 'unknown']) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = value;
-    option.selected = (shape.status ?? 'draft') === value;
-    statusSelect.append(option);
-  }
-  statusSelect.addEventListener('change', () => {
-    shape.status = statusSelect.value;
-    renderValidationReport();
-  });
-  dom.shapeEditor.append(labelBlock('Statut', statusSelect));
-
-  const symmetryGrid = document.createElement('div');
-  symmetryGrid.className = 'editor-row';
-  for (const axis of ['length', 'width', 'height']) {
-    const label = document.createElement('label');
-    label.className = 'inline-check';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = shape.allowed_symmetry?.[axis] !== false;
-    input.addEventListener('change', () => {
-      shape.allowed_symmetry ??= {};
-      shape.allowed_symmetry[axis] = input.checked;
-      renderValidationReport();
-      updateSelectionUi();
-    });
-    label.append(input, document.createTextNode(axis));
-    symmetryGrid.append(label);
-  }
-  dom.shapeEditor.append(labelBlock('Symétries autorisées', symmetryGrid));
-
-  const anchors = document.createElement('textarea');
-  anchors.rows = 7;
-  anchors.value = JSON.stringify(shape.anchors ?? [], null, 2);
-  anchors.addEventListener('change', () => {
-    try {
-      const parsed = JSON.parse(anchors.value);
-      if (!Array.isArray(parsed)) throw new Error('anchors must be an array');
-      shape.anchors = parsed;
-      anchors.classList.remove('invalid');
-      refreshInstancesUsingShape(shape.id);
-      renderValidationReport();
-    } catch {
-      anchors.classList.add('invalid');
-    }
-  });
-  dom.shapeEditor.append(labelBlock('Ancres JSON', anchors));
-}
-
-function getShapeBaseTypeValue(shape) {
-  if (shape?.generation?.mode === 'legacy_mesh') return 'legacy_mesh';
-  const base = shape?.generation?.base;
-  if (shape?.generation?.mode === 'primitive_stack' && base?.type === 'wedge') {
-    return base.slope_axis === 'width' ? 'wedge_width_left_to_right' : 'wedge_length_front_to_back';
-  }
-  if (shape?.generation?.mode === 'primitive_stack' && base?.type === 'box') return 'box';
-  return 'box';
-}
-
-function getGenerationFromBaseType(sizeId, baseType) {
-  const size = getSize(sizeId);
-  const bounds = {
-    length: size?.dimensions?.length ?? 4,
-    width: size?.dimensions?.width ?? 3,
-    height: size?.dimensions?.height ?? 1,
-  };
-  if (baseType === 'wedge_width_left_to_right') {
-    return {
-      mode: 'primitive_stack',
-      base: { type: 'wedge', bounds, slope_axis: 'width', slope_direction: 'left_to_right' },
-      operations: [],
-    };
-  }
-  if (baseType === 'wedge_length_front_to_back') {
-    return {
-      mode: 'primitive_stack',
-      base: { type: 'wedge', bounds, slope_axis: 'length', slope_direction: 'front_to_back' },
-      operations: [],
-    };
-  }
-  return {
-    mode: 'primitive_stack',
-    base: { type: 'box', bounds },
-    operations: [],
-  };
-}
-
-function renderSpecEditor(spec) {
-  if (!IS_EDITOR || !dom.specEditor) return;
-  const definitions = state.catalog.definitions?.spec_fields ?? {};
-  if (!spec) {
-    dom.specEditor.textContent = 'Profil introuvable.';
-    return;
-  }
-
-  dom.specEditor.innerHTML = '';
-  const header = document.createElement('div');
-  header.className = 'editor-row editor-header';
-  header.innerHTML = '<span>Champ</span><span>Valeur</span><span>Statut</span>';
-  dom.specEditor.append(header);
-
-  for (const [fieldId, definition] of Object.entries(definitions)) {
-    const current = spec.specs?.[fieldId] ?? { value: null, unit: definition.unit ?? null, status: 'unknown' };
-    spec.specs ??= {};
-    spec.specs[fieldId] = current;
-
-    const row = document.createElement('div');
-    row.className = 'editor-row';
-
-    const label = document.createElement('span');
-    label.textContent = `${definition.label_fr ?? fieldId}${current.unit ? ` (${current.unit})` : ''}`;
-
-    const value = document.createElement('input');
-    value.type = 'number';
-    value.step = 'any';
-    value.placeholder = 'null';
-    value.value = current.value ?? '';
-    value.dataset.field = fieldId;
-    value.addEventListener('change', () => {
-      current.value = value.value === '' ? null : Number(value.value);
-      if (current.value === null) current.status = 'unknown';
-      renderCatalogEditors();
-      updateStats();
-    });
-
-    const status = document.createElement('select');
-    for (const optionValue of ['confirmed', 'draft', 'unknown']) {
-      const option = document.createElement('option');
-      option.value = optionValue;
-      option.textContent = optionValue;
-      option.selected = (current.status ?? 'unknown') === optionValue;
-      status.append(option);
-    }
-    status.addEventListener('change', () => {
-      current.status = status.value;
-      updateStats();
-      renderValidationReport();
-    });
-
-    row.append(label, value, status);
-    dom.specEditor.append(row);
-  }
-}
-
-function renderRecipeEditor(recipe) {
-  if (!IS_EDITOR || !dom.recipeEditor) return;
-  if (!recipe) {
-    dom.recipeEditor.textContent = 'Recette absente ou inconnue.';
-    return;
-  }
-
-  dom.recipeEditor.innerHTML = '';
-  const rows = [
-    ['Coût', 'cost.value', recipe.cost?.value ?? '', 'number'],
-    ['Durée', 'duration.value', recipe.duration?.value ?? '', 'number'],
-    ['Station', 'station.label_fr', recipe.station?.label_fr ?? '', 'text'],
-    ['Statut', 'status', recipe.status ?? 'unknown', 'status'],
-  ];
-
-  for (const [labelText, path, valueText, type] of rows) {
-    const row = document.createElement('div');
-    row.className = 'editor-row two-cols';
-    const label = document.createElement('span');
-    label.textContent = labelText;
-
-    let input;
-    if (type === 'status') {
-      input = document.createElement('select');
-      for (const optionValue of ['confirmed', 'draft', 'unknown']) {
-        const option = document.createElement('option');
-        option.value = optionValue;
-        option.textContent = optionValue;
-        option.selected = valueText === optionValue;
-        input.append(option);
-      }
-    } else {
-      input = document.createElement('input');
-      input.type = type;
-      input.step = type === 'number' ? 'any' : undefined;
-      input.value = valueText ?? '';
-      input.placeholder = type === 'number' ? 'null' : '';
-    }
-
-    input.addEventListener('change', () => {
-      setNestedValue(recipe, path, input.value === '' && type === 'number' ? null : (type === 'number' ? Number(input.value) : input.value));
-      if (path === 'cost.value') recipe.cost.status = recipe.cost.value === null ? 'unknown' : 'draft';
-      if (path === 'duration.value') recipe.duration.status = recipe.duration.value === null ? 'unknown' : 'draft';
-      renderValidationReport();
-    });
-
-    row.append(label, input);
-    dom.recipeEditor.append(row);
-  }
-
-  const ingredients = document.createElement('textarea');
-  ingredients.value = JSON.stringify(recipe.ingredients ?? [], null, 2);
-  ingredients.rows = 5;
-  ingredients.addEventListener('change', () => {
-    try {
-      const parsed = JSON.parse(ingredients.value);
-      recipe.ingredients = Array.isArray(parsed) ? parsed : [];
-      ingredients.classList.remove('invalid');
-      renderValidationReport();
-    } catch {
-      ingredients.classList.add('invalid');
-    }
-  });
-  dom.recipeEditor.append(labelBlock('Ingrédients JSON', ingredients));
-}
-
-function setNestedValue(target, path, value) {
-  const parts = path.split('.');
-  let cursor = target;
-  while (parts.length > 1) {
-    const key = parts.shift();
-    cursor[key] ??= {};
-    cursor = cursor[key];
-  }
-  cursor[parts[0]] = value;
-}
-
-function labelBlock(labelText, element) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'field-block';
-  const label = document.createElement('span');
-  label.textContent = labelText;
-  wrapper.append(label, element);
-  return wrapper;
-}
-
-function renderValidationReport() {
-  if (!IS_EDITOR || !dom.validationReport) return;
-  const report = validateCatalog();
-  dom.validationReport.textContent = [
-    `erreurs         : ${report.errors.length}`,
-    `avertissements  : ${report.warnings.length}`,
-    '',
-    ...report.errors.map((item) => `ERR  ${item}`),
-    ...report.warnings.map((item) => `WARN ${item}`),
-    report.errors.length === 0 && report.warnings.length === 0 ? 'OK références et structure de base.' : '',
-  ].filter(Boolean).join('\n');
-}
-
-function validateCatalog() {
-  const errors = [];
-  const warnings = [];
-  const catalog = state.catalog;
-  const repo = state.repo;
-
-  if (!catalog.schema_version) errors.push('schema_version absent.');
-  for (const piece of catalog.catalog_pieces ?? []) {
-    const family = repo.families.get(piece.family_id);
-    const size = repo.sizes.get(piece.size_id);
-    const shape = repo.shapeVariants.get(piece.shape_variant_id);
-    const spec = repo.specProfiles.get(piece.spec_profile_id);
-    const recipe = piece.recipe_id ? repo.recipes.get(piece.recipe_id) : null;
-
-    if (!family) errors.push(`${piece.id}: family_id introuvable (${piece.family_id}).`);
-    if (!size) errors.push(`${piece.id}: size_id introuvable (${piece.size_id}).`);
-    if (!shape) errors.push(`${piece.id}: shape_variant_id introuvable (${piece.shape_variant_id}).`);
-    if (!spec) errors.push(`${piece.id}: spec_profile_id introuvable (${piece.spec_profile_id}).`);
-    if (piece.recipe_id && !recipe) errors.push(`${piece.id}: recipe_id introuvable (${piece.recipe_id}).`);
-    if (shape && shape.size_id !== piece.size_id) errors.push(`${piece.id}: shape.size_id (${shape.size_id}) != piece.size_id (${piece.size_id}).`);
-    if (spec && spec.size_id !== piece.size_id) errors.push(`${piece.id}: spec.size_id (${spec.size_id}) != piece.size_id (${piece.size_id}).`);
-    if (!piece.fixed_catalog_entry) warnings.push(`${piece.id}: fixed_catalog_entry devrait rester true pour le catalogue fermé.`);
-  }
-
-  for (const shape of catalog.shape_variants ?? []) {
-    if (!repo.sizes.get(shape.size_id)) errors.push(`${shape.id}: size_id introuvable.`);
-    if (!shape.generation?.mode) errors.push(`${shape.id}: generation.mode absent.`);
-    if (shape.generation?.mode === 'legacy_mesh') warnings.push(`${shape.id}: mesh migré temporaire, à remplacer par opérations paramétriques.`);
-    for (const anchor of shape.anchors ?? []) {
-      if (!anchor.position || !anchor.normal) errors.push(`${shape.id}/${anchor.id}: anchor position/normal absent.`);
-    }
-  }
-
-  for (const recipe of catalog.recipes ?? []) {
-    if (!repo.specProfiles.get(recipe.output_spec_profile_id)) errors.push(`${recipe.id}: output_spec_profile_id introuvable.`);
-  }
-
-  return { errors, warnings };
-}
-
-function exportCatalog() {
-  if (!IS_EDITOR) return;
-  downloadJson('spacecraft_rich_catalog.json', state.catalog);
 }
 
 function serializePlacedPiece(instance) {
@@ -4197,12 +3561,26 @@ function downloadJson(filename, payload) {
 
 async function init() {
   state.catalog = await loadAssemblyCatalog();
-  state.repo = buildRepository(state.catalog);
-
-  if (!Array.isArray(state.catalog.catalog_pieces)) {
-    throw new Error('Catalogue invalide : catalog_pieces absent. Ancien format {catalog,pieces} non accepté.');
+  const catalogValidation = validateCatalogData(state.catalog);
+  if (!catalogValidation.valid) {
+    throw new Error(`Catalogue invalide: ${catalogValidation.errors.map((issue) => `${issue.path}: ${issue.message}`).join(' ')}`);
   }
-
+  state.repo = buildRepository(state.catalog);
+  assemblyMovementController = createAssemblyMovementController({
+    collidesBoxesWithScene,
+    getAssemblyGroupById,
+    getGroupChildBoxes,
+    getInstanceBox,
+    getInstanceById,
+    isGroupPlacementValid,
+    isSaneWorldPosition,
+    resolveVerticalCollisionOriginForGroup,
+    setGroupWorldPosition,
+    setMessage,
+    updateAttachmentStates,
+    updateSelectionBox,
+    updateStats,
+  });
   updateAssemblyGrid();
   state.persistence = createAssemblyPersistenceController({
     catalog: state.catalog,
@@ -4213,8 +3591,6 @@ async function init() {
   });
 
   renderCatalogPieceOptions();
-  populateCreationForms();
-  renderCatalogEditors();
   selectInstance(null);
   updateEmptyHint();
   bindEvents();
@@ -4232,21 +3608,6 @@ async function init() {
 function bindEvents() {
   mountSymmetryButtonIcons();
   dom.catalogPieceSelect?.addEventListener('change', () => setSelectedCatalogPiece(dom.catalogPieceSelect.value));
-
-  if (IS_EDITOR) {
-    dom.variantSizeSelect?.addEventListener('change', updateCreatePieceDefaultLabel);
-    dom.createVariantBtn?.addEventListener('click', createVariantFromForm);
-    dom.duplicateVariantBtn?.addEventListener('click', duplicateSelectedVariant);
-    dom.pieceFamilySelect?.addEventListener('change', updateCreatePieceDefaultLabel);
-    dom.pieceSizeSelect?.addEventListener('change', () => {
-      renderPieceShapeSelect();
-      updateCreatePieceDefaultLabel();
-    });
-    dom.pieceShapeSelect?.addEventListener('change', updateCreatePieceDefaultLabel);
-    dom.pieceProfileTypeInput?.addEventListener('input', updateCreatePieceDefaultLabel);
-    dom.createCatalogPieceBtn?.addEventListener('click', createCatalogPieceFromForm);
-    dom.exportCatalogBtn?.addEventListener('click', exportCatalog);
-  }
 
   dom.instanceSelect.addEventListener('change', () => {
     const selectedOptions = [...dom.instanceSelect.selectedOptions];
@@ -4407,6 +3768,19 @@ function bindEvents() {
     if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') return;
     const key = event.key.toLowerCase();
     const selectionActive = hasSelection();
+
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && key === 'z') {
+      if (event.shiftKey) {
+        if (historyStack.redo()) event.preventDefault();
+      } else if (historyStack.undo()) {
+        event.preventDefault();
+      }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && key === 'y') {
+      if (historyStack.redo()) event.preventDefault();
+      return;
+    }
 
     if ((event.ctrlKey || event.metaKey) && key === 'c') {
       if (copySelectedInstances()) event.preventDefault();

@@ -407,7 +407,7 @@ input[type="checkbox"] {
 .empty-hint {
   position: absolute;
   color: #c5c9d3;
-  background: rgba(10, 12, 16, 0.72);
+  background: rgba(10, 12, 16, 0.90);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 8px;
   padding: 8px 10px;
@@ -418,7 +418,9 @@ input[type="checkbox"] {
 .help-overlay {
   left: 16px;
   top: 16px;
-  width: min(360px, calc(100% - 32px));
+  width: min(520px, calc(100% - 32px));
+  max-width: 100%;
+  background: rgba(13, 16, 23, 0.95);
   pointer-events: auto;
 }
 
@@ -1045,7 +1047,10 @@ canvas.catalog-drop-target {
 }
 
 .assembly-mode .left-panel {
+  max-height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
 }
