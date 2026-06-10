@@ -87,4 +87,20 @@ Mes créations
 -> import JSON canonique
 ```
 
+## Groupes Assembly
+
+Assembly permet maintenant de créer des groupes logiques de pièces déjà placées.
+
+```txt
+sélection multiple dans "Pièces placées"
+ou Shift + clic sur des pièces libres
+-> Créer groupe
+-> sélection / drag / hauteur / duplication / suppression comme un bloc
+-> Dégrouper / Renommer groupe
+```
+
+Le moteur ne fusionne pas la géométrie : un groupe reste un conteneur logique persistant au-dessus des instances de pièces.
+
+La création est refusée si les pièces sélectionnées ne forment pas un ensemble connecté par ancres compatibles.
+
 La persistance catalogue navigateur reste interdite. Seules les créations de vaisseaux utilisent IndexedDB.

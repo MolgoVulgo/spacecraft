@@ -102,3 +102,7 @@ Known limitations
 ```
 
 Keep it short.
+
+## Git rule
+
+- When the user asks for a commit, always include all modified files in the workspace commit.

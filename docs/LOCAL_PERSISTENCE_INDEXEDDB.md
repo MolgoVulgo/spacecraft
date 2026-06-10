@@ -34,6 +34,7 @@ name
 created_at
 updated_at
 ship.pieces
+ship.groups
 ship.computed_specs
 ```
 
@@ -54,6 +55,20 @@ material
 anchor_links
 components
 modifiers
+group_id
+```
+
+Chaque groupe stocke :
+
+```text
+group_id
+type = group
+name
+origin
+pivot
+bbox
+children[instance_id, local_position]
+metadata
 ```
 
 ## IndexedDB
@@ -89,7 +104,11 @@ Triggers câblés en Assembly :
 ```text
 ajout de pièce
 duplication de pièce
+duplication de groupe
 suppression de pièce
+suppression de groupe
+création de groupe
+dégrouper
 vidage de scène
 fin de drag avec déplacement réel
 changement de symétrie
