@@ -6,6 +6,8 @@ import { buildShapeGeometry, createCatalogReservationBox, catalogPointVector } f
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { createNavigationCubeViewApi } from './navigation-cube.js';
+import { createAssemblyPersistenceController } from './assembly-persistence-controller.js';
+import { buildShipCreation } from './ship-creation.js';
 import {
   LEGACY_ASSEMBLY_SIDE_VIEW_ID,
   createAssemblyViewController,
@@ -53,6 +55,7 @@ const state = {
   catalogFilters: { familyId: null, sizeId: null, profileType: null },
   viewMode: 'top',
   showAnchors: false,
+  persistence: null,
 };
 
 const dom = {
@@ -89,6 +92,21 @@ const dom = {
   fitAllBtn: document.querySelector('#fitAllBtn'),
   screenshotBtn: document.querySelector('#screenshotBtn'),
   exportBlueprintBtn: document.querySelector('#exportBlueprintBtn'),
+  shipList: document.querySelector('#shipList'),
+  shipNameInput: document.querySelector('#shipNameInput'),
+  shipStorageStatus: document.querySelector('#shipStorageStatus'),
+  creationsPanel: document.querySelector('#creationsPanel'),
+  creationsPanelBody: document.querySelector('#creationsPanelBody'),
+  toggleCreationsPanelBtn: document.querySelector('#toggleCreationsPanelBtn'),
+  toggleCreationsPanelIcon: document.querySelector('#toggleCreationsPanelIcon'),
+  newShipBtn: document.querySelector('#newShipBtn'),
+  openShipBtn: document.querySelector('#openShipBtn'),
+  renameShipBtn: document.querySelector('#renameShipBtn'),
+  deleteShipBtn: document.querySelector('#deleteShipBtn'),
+  duplicateShipBtn: document.querySelector('#duplicateShipBtn'),
+  exportShipBtn: document.querySelector('#exportShipBtn'),
+  importShipBtn: document.querySelector('#importShipBtn'),
+  importShipInput: document.querySelector('#importShipInput'),
   exportCatalogBtn: document.querySelector('#exportCatalogBtn'),
   validationReport: document.querySelector('#validationReport'),
   variantSizeSelect: document.querySelector('#variantSizeSelect'),
@@ -449,7 +467,9 @@ function disposeAnchorGroup(group) {
 }
 
 function createInstance(catalogPiece, options = {}) {
-  const id = `placed_${String(state.nextInstanceId++).padStart(3, '0')}`;
+  const id = String(options.id ?? `placed_${String(state.nextInstanceId++).padStart(3, '0')}`);
+  const forcedIndex = Number.parseInt(id.replace(/^placed_/, ''), 10);
+  if (Number.isFinite(forcedIndex)) state.nextInstanceId = Math.max(state.nextInstanceId, forcedIndex + 1);
   const symmetry = cloneSymmetry(options.symmetry);
   const geometry = buildGeometry(catalogPiece, symmetry);
   const material = createMaterial(options.color ?? dom.colorInput.value ?? DEFAULT_COLOR);
@@ -472,7 +492,9 @@ function createInstance(catalogPiece, options = {}) {
   group.add(edges);
   group.add(anchors);
 
-  const preferredPosition = options.position ? normalizeNewPiecePosition(catalogPiece, options.position) : findAvailablePosition(catalogPiece);
+  const preferredPosition = options.position
+    ? (options.preservePosition ? options.position.clone() : normalizeNewPiecePosition(catalogPiece, options.position))
+    : findAvailablePosition(catalogPiece);
   if (!preferredPosition) {
     setMessage('Ajout impossible : aucun emplacement libre trouvé.');
     geometry.dispose();
@@ -489,10 +511,10 @@ function createInstance(catalogPiece, options = {}) {
 
   const instance = {
     id,
-    label: `${catalogPiece.label_fr || catalogPiece.id} #${id.replace('placed_', '')}`,
+    label: options.label ?? `${catalogPiece.label_fr || catalogPiece.id} #${id.replace('placed_', '')}`,
     catalogPieceId: catalogPiece.id,
     symmetry,
-    rotation: { axis: 'height', quarter_turns: 0 },
+    rotation: { axis: 'height', quarter_turns: 0, ...(options.rotation ?? {}) },
     group,
     mesh,
     edges,
@@ -578,7 +600,10 @@ function addCatalogPieceById(pieceId, position = null) {
   renderCatalogPieceOptions();
   renderCatalogEditors();
   const instance = createInstance(catalogPiece, position ? { position } : {});
-  if (instance) fitCameraToObject(instance.group, false);
+  if (instance) {
+    fitCameraToObject(instance.group, false);
+    markShipDirty();
+  }
   return instance;
 }
 
@@ -619,7 +644,10 @@ function duplicateSelectedInstance() {
     position: position ?? findAvailablePosition(catalogPiece),
   });
 
-  if (clone) fitCameraToObject(clone.group, false);
+  if (clone) {
+    fitCameraToObject(clone.group, false);
+    markShipDirty();
+  }
 }
 
 function disposeInstance(instance) {
@@ -640,9 +668,10 @@ function removeSelectedInstance() {
   updateAttachmentStates();
   updateSelectionBox();
   updateDimensionOverlay();
+  markShipDirty();
 }
 
-function clearScene() {
+function clearScene(options = {}) {
   for (const instance of state.instances) disposeInstance(instance);
   state.instances = [];
   state.selectedId = null;
@@ -654,6 +683,7 @@ function clearScene() {
   updateSelectionBox();
   updateDimensionOverlay();
   setMessage('');
+  if (!options.skipPersist) markShipDirty();
 }
 
 function selectInstance(id) {
@@ -782,6 +812,7 @@ function applySymmetryState(instance, nextSymmetry) {
   updateStats();
   updateSelectionBox();
   setMessage('');
+  markShipDirty();
 }
 
 function getBoxAt(geometry, position) {
@@ -958,6 +989,19 @@ function updateStats() {
 function setMessage(message) {
   state.lastMessage = message;
   updateStats();
+}
+
+function markShipDirty() {
+  const task = state.persistence?.markSceneDirty?.();
+  task?.catch((error) => {
+    setMessage(error?.message ?? 'Autosave impossible.');
+  });
+}
+
+function runPersistenceTask(task, fallbackMessage) {
+  task?.catch((error) => {
+    setMessage(error?.message ?? fallbackMessage);
+  });
 }
 
 function fmt(value) {
@@ -1604,18 +1648,23 @@ function applyDragPosition(instance, position) {
 function moveSelectedHeight(delta) {
   const selected = getSelectedInstance();
   if (!selected) return;
+  const before = selected.group.position.z;
   const next = selected.group.position.clone();
   next.z = snapValue(next.z + delta, getMagnetStep());
-  tryMoveInstance(selected, next, 'Hauteur refusée : collision avec une autre pièce.');
+  if (tryMoveInstance(selected, next, 'Hauteur refusée : collision avec une autre pièce.') && selected.group.position.z !== before) {
+    markShipDirty();
+  }
 }
 
 function setSelectedHeight(value) {
   const selected = getSelectedInstance();
   if (!selected) return;
+  const before = selected.group.position.z;
   const next = selected.group.position.clone();
   next.z = snapValue(Number(value) || 0, getMagnetStep());
   tryMoveInstance(selected, next, 'Hauteur refusée : collision avec une autre pièce.');
   dom.heightInput.value = String(Math.round(selected.group.position.z));
+  if (selected.group.position.z !== before) markShipDirty();
 }
 
 function getHeightStep() {
@@ -1728,12 +1777,14 @@ function onPointerUp(event) {
   event.preventDefault();
   event.stopImmediatePropagation();
 
+  const moved = !state.drag.startPosition.equals(state.drag.lastValidPosition);
   dom.canvas.releasePointerCapture?.(event.pointerId);
   state.drag = null;
   orbitControls.enabled = true;
   dom.canvas.classList.remove('dragging-piece');
   updateStats();
   updateSelectionBox();
+  if (moved) markShipDirty();
 }
 
 
@@ -2384,6 +2435,7 @@ function applyCatalogShapeToSelectedInstance(pieceId) {
   updateStats();
   updateSelectionBox();
   setMessage('Forme appliquée à la pièce sélectionnée.');
+  markShipDirty();
 }
 
 function getFilteredCatalogPieces(pieces) {
@@ -2874,28 +2926,129 @@ function exportCatalog() {
   downloadJson('spacecraft_rich_catalog.json', state.catalog);
 }
 
-function exportBlueprint() {
-  const blueprint = {
-    id: `ship_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`,
-    name: 'Draft Ship',
-    schema_version: state.catalog.ship_blueprint_schema?.version ?? state.catalog.schema_version,
-    placed_pieces: state.instances.map((instance) => ({
-      id: instance.id,
-      catalog_piece_id: instance.catalogPieceId,
-      position: {
-        x: round3(instance.group.position.x),
-        y: round3(instance.group.position.y),
-        z: round3(instance.group.position.z),
-      },
-      rotation: { ...instance.rotation },
-      symmetry: { ...instance.symmetry },
-      anchor_links: [],
-      metadata: { locked: false, notes: [] },
-    })),
-    computed_stats: calculateShipStats(),
-    metadata: { created_with: 'spacecraft_c1_web_editor', notes: [] },
+function serializePlacedPiece(instance) {
+  const catalogPiece = getCatalogPieceById(instance.catalogPieceId);
+  return {
+    placed_piece_id: instance.id,
+    label: instance.label,
+    catalog_piece_id: instance.catalogPieceId,
+    family_id: catalogPiece?.family_id ?? null,
+    size_id: catalogPiece?.size_id ?? null,
+    shape_variant_id: catalogPiece?.shape_variant_id ?? null,
+    spec_profile_id: catalogPiece?.spec_profile_id ?? null,
+    recipe_id: catalogPiece?.recipe_id ?? null,
+    position: {
+      x: round3(instance.group.position.x),
+      y: round3(instance.group.position.y),
+      z: round3(instance.group.position.z),
+    },
+    rotation: { ...instance.rotation },
+    symmetry: { ...instance.symmetry },
+    material: {
+      color: `#${instance.material.color.getHexString()}`,
+    },
+    anchor_links: [],
+    components: [],
+    modifiers: [],
+    metadata: { locked: false, notes: [] },
   };
-  downloadJson(`${blueprint.id}.json`, blueprint);
+}
+
+function serializeCurrentShip({ localId, name, createdAt }) {
+  return buildShipCreation({
+    catalog: state.catalog,
+    localId,
+    name,
+    createdAt,
+    updatedAt: new Date().toISOString(),
+    pieces: state.instances.map(serializePlacedPiece),
+    computedSpecs: calculateShipStats(),
+    metadata: {
+      created_with: 'spacecraft_c1_web_editor',
+      notes: [],
+    },
+  });
+}
+
+function loadShipCreationIntoScene(shipCreation) {
+  clearScene({ skipPersist: true });
+  state.nextInstanceId = 1;
+
+  for (const piece of shipCreation.ship?.pieces ?? []) {
+    const catalogPiece = getCatalogPieceById(piece.catalog_piece_id);
+    if (!catalogPiece) continue;
+    createInstance(catalogPiece, {
+      id: piece.placed_piece_id,
+      label: piece.label,
+      symmetry: piece.symmetry,
+      rotation: piece.rotation,
+      color: piece.material?.color,
+      preservePosition: true,
+      position: new THREE.Vector3(
+        Number(piece.position?.x) || 0,
+        Number(piece.position?.y) || 0,
+        Number(piece.position?.z) || 0,
+      ),
+    });
+  }
+
+  selectInstance(state.instances[0]?.id ?? null);
+  updateStats();
+  fitCameraToAll(false);
+  setMessage('');
+}
+
+function formatDateTime(value) {
+  if (!value) return 'n/a';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('fr-FR');
+}
+
+function renderShipPersistenceState(persistenceState) {
+  if (!dom.shipStorageStatus || !dom.shipList || !dom.shipNameInput) return;
+
+  dom.shipNameInput.value = persistenceState.currentShipName ?? 'Unnamed';
+  dom.shipList.innerHTML = '';
+
+  for (const ship of persistenceState.ships) {
+    const option = document.createElement('option');
+    option.value = ship.local_id;
+    option.textContent = `${ship.name} · ${ship.piece_count} pièce(s) · ${formatDateTime(ship.updated_at)}`;
+    option.selected = ship.local_id === persistenceState.currentShipId;
+    dom.shipList.append(option);
+  }
+
+  if (persistenceState.currentShipId) dom.shipList.value = persistenceState.currentShipId;
+  if (dom.openShipBtn) dom.openShipBtn.disabled = !dom.shipList.value;
+  if (dom.renameShipBtn) dom.renameShipBtn.disabled = !persistenceState.currentShipId;
+  if (dom.deleteShipBtn) dom.deleteShipBtn.disabled = !dom.shipList.value;
+  if (dom.duplicateShipBtn) dom.duplicateShipBtn.disabled = !dom.shipList.value;
+  if (dom.exportShipBtn) dom.exportShipBtn.disabled = !persistenceState.currentShipId;
+
+  const saveState = persistenceState.saveInProgress
+    ? 'sauvegarde en cours'
+    : (persistenceState.isDirty ? 'modifications en attente' : 'à jour');
+  dom.shipStorageStatus.textContent = [
+    `mode              : ${persistenceState.storageMode}`,
+    `création active   : ${persistenceState.currentShipName ?? 'n/a'}`,
+    `état sauvegarde   : ${saveState}`,
+    `dernier save      : ${formatDateTime(persistenceState.lastSavedAt)}`,
+    `erreur            : ${persistenceState.lastSaveError || 'aucune'}`,
+    `info stockage     : ${persistenceState.lastWarning || 'aucune'}`,
+  ].join('\n');
+}
+
+function setCreationsPanelCollapsed(collapsed) {
+  if (!dom.creationsPanel || !dom.toggleCreationsPanelBtn || !dom.creationsPanelBody) return;
+  dom.creationsPanel.classList.toggle('is-collapsed', collapsed);
+  dom.creationsPanelBody.hidden = collapsed;
+  dom.toggleCreationsPanelBtn.setAttribute('aria-expanded', String(!collapsed));
+  if (dom.toggleCreationsPanelIcon) dom.toggleCreationsPanelIcon.textContent = collapsed ? '[+]' : '[-]';
+}
+
+function exportBlueprint() {
+  runPersistenceTask(state.persistence?.exportCurrentShip?.(), 'Export impossible.');
 }
 
 function round3(value) {
@@ -2920,12 +3073,22 @@ async function init() {
   }
 
   updateAssemblyGrid();
+  state.persistence = createAssemblyPersistenceController({
+    catalog: state.catalog,
+    serializeCurrentShip,
+    loadShipCreation: loadShipCreationIntoScene,
+    onStateChange: renderShipPersistenceState,
+    downloadJson,
+  });
+
   renderCatalogPieceOptions();
   populateCreationForms();
   renderCatalogEditors();
   selectInstance(null);
   updateEmptyHint();
   bindEvents();
+  setCreationsPanelCollapsed(false);
+  await state.persistence.init();
   mountAssemblyNavigationCube();
   setAssemblyView('top', false);
   updateOrthographicFrustum(1000);
@@ -2957,11 +3120,61 @@ function bindEvents() {
   dom.clearSceneBtn.addEventListener('click', clearScene);
   dom.deselectBtn.addEventListener('click', () => selectInstance(null));
   dom.exportBlueprintBtn?.addEventListener('click', exportBlueprint);
+  dom.shipList?.addEventListener('change', () => {
+    dom.openShipBtn.disabled = !dom.shipList.value;
+  });
+  dom.toggleCreationsPanelBtn?.addEventListener('click', () => {
+    const collapsed = dom.creationsPanel?.classList.contains('is-collapsed');
+    setCreationsPanelCollapsed(!collapsed);
+  });
+  dom.openShipBtn?.addEventListener('click', () => {
+    if (!dom.shipList.value) return;
+    runPersistenceTask(state.persistence?.openShip(dom.shipList.value), 'Ouverture impossible.');
+  });
+  dom.newShipBtn?.addEventListener('click', () => {
+    runPersistenceTask(state.persistence?.createShip('Unnamed'), 'Création impossible.');
+  });
+  dom.renameShipBtn?.addEventListener('click', () => {
+    runPersistenceTask(state.persistence?.renameCurrentShip(dom.shipNameInput.value), 'Renommage impossible.');
+  });
+  dom.shipNameInput?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    runPersistenceTask(state.persistence?.renameCurrentShip(dom.shipNameInput.value), 'Renommage impossible.');
+  });
+  dom.duplicateShipBtn?.addEventListener('click', () => {
+    const localId = dom.shipList.value || state.persistence?.getState()?.currentShipId;
+    runPersistenceTask(state.persistence?.duplicateShip(localId), 'Duplication impossible.');
+  });
+  dom.deleteShipBtn?.addEventListener('click', () => {
+    const localId = dom.shipList.value || state.persistence?.getState()?.currentShipId;
+    if (!localId) return;
+    runPersistenceTask(state.persistence?.deleteShip(localId), 'Suppression impossible.');
+  });
+  dom.exportShipBtn?.addEventListener('click', () => {
+    runPersistenceTask(state.persistence?.exportCurrentShip?.(), 'Export impossible.');
+  });
+  dom.importShipBtn?.addEventListener('click', () => {
+    dom.importShipInput?.click();
+  });
+  dom.importShipInput?.addEventListener('change', async () => {
+    const [file] = dom.importShipInput.files ?? [];
+    if (!file) return;
+    try {
+      if (!state.persistence?.importShip) throw new Error('Import indisponible.');
+      await state.persistence.importShip(file);
+    } catch (error) {
+      setMessage(error?.message ?? 'Import impossible.');
+    } finally {
+      dom.importShipInput.value = '';
+    }
+  });
 
   dom.colorInput.addEventListener('input', () => {
     const selected = getSelectedInstance();
     if (!selected) return;
     selected.material.color.set(dom.colorInput.value);
+    markShipDirty();
   });
 
   dom.mirrorLengthBtn?.addEventListener('click', () => toggleSelectedSymmetry('length'));

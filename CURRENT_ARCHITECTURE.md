@@ -45,6 +45,7 @@ Rules:
 ```text
 - Do not use localStorage for catalog persistence.
 - Do not keep an Assembly-specific catalog copy in browser storage.
+- Do not mix catalog persistence with ship-creation persistence.
 - Editor publish writes the catalog file in dev through the Vite endpoint.
 - Static build fallback may download/export JSON if direct write is impossible.
 - Assembly reads /data/4x3x1_catalog.json only.
@@ -110,6 +111,37 @@ X = width / largeur
 Y = depth / length / profondeur-longueur
 Z = height / hauteur
 ```
+
+## Ship persistence
+
+Assembly now has a separate local persistence layer for ship creations.
+
+```text
+src/ship-creation.js                  -> canonical ShipCreation model + validation/import/export helpers
+src/storage/localDb.js                -> IndexedDB bootstrap/versioning/object stores
+src/storage/shipRepository.js         -> repository API for creations
+src/storage/storageAvailability.js    -> IndexedDB availability probe
+src/assembly-persistence-controller.js -> Assembly-facing autosave and creation management controller
+```
+
+Storage rules:
+
+```text
+IndexedDB database name = spacecraft_editor
+IndexedDB version       = 1
+ships store             = ShipCreation objects
+app_meta store          = last_opened_ship_id / storage_schema_version
+```
+
+Assembly `main.js` must remain an integration layer:
+
+```text
+- Three.js scene/controller wiring
+- DOM event binding
+- scene <-> ShipCreation serialization adapter
+```
+
+Business rules for persistence must stay in the dedicated modules above.
 
 This convention is shared by Assembly and Editor.
 

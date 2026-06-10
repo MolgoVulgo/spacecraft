@@ -47,3 +47,44 @@ editor.html
 ```
 
 `index.html` utilise toujours le fichier catalogue publié, jamais un état navigateur persistant.
+
+## Persistance locale des créations
+
+Le catalogue reste statique et versionné dans `public/data/4x3x1_catalog.json`.
+
+Les créations utilisateur sont maintenant stockées séparément :
+
+```txt
+catalogue officiel      -> /data/4x3x1_catalog.json
+créations utilisateur   -> IndexedDB (base spacecraft_editor)
+import / export         -> fichiers .spacecraft.json
+```
+
+Le format local canonique est `ShipCreation` :
+
+```json
+{
+  "schema_version": 1,
+  "catalog_version": "0.1.0",
+  "local_id": "uuid",
+  "name": "Unnamed",
+  "created_at": "2026-06-10T12:00:00.000Z",
+  "updated_at": "2026-06-10T12:00:00.000Z",
+  "ship": {
+    "pieces": [],
+    "computed_specs": {}
+  }
+}
+```
+
+`index.html` expose maintenant :
+
+```txt
+Mes créations
+-> nouveau / ouvrir / renommer / dupliquer / supprimer
+-> autosave local
+-> export JSON canonique
+-> import JSON canonique
+```
+
+La persistance catalogue navigateur reste interdite. Seules les créations de vaisseaux utilisent IndexedDB.

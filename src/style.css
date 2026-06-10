@@ -981,15 +981,16 @@ canvas.catalog-drop-target {
 }
 
 .assembly-mode .left-panel {
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .assembly-mode .catalog-only-block {
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
 }
 
 .assembly-mode #catalogPieceSelect {
@@ -1016,7 +1017,7 @@ canvas.catalog-drop-target {
   grid-template-columns: minmax(240px, 1fr) minmax(260px, 1.1fr);
   gap: 10px;
   min-height: 214px;
-  max-height: 260px;
+  max-height: 300px;
   padding: 10px;
   overflow: auto;
   background: #14161b;
@@ -1046,6 +1047,82 @@ canvas.catalog-drop-target {
   max-height: 116px;
   overflow: auto;
   margin-bottom: 8px;
+}
+
+.storage-summary-box {
+  min-height: 98px;
+  max-height: 128px;
+  margin: 8px 0;
+}
+
+.creations-card {
+  display: grid;
+  grid-template-rows: auto auto minmax(98px, auto) minmax(90px, 1fr) auto;
+  gap: 0;
+}
+
+.creations-card #shipNameInput,
+.creations-card #shipList {
+  margin-top: 8px;
+}
+
+.creations-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.creations-panel-body {
+  display: grid;
+  grid-template-rows: auto minmax(98px, auto) minmax(120px, 1fr) auto;
+  gap: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.creations-panel #shipNameInput,
+.creations-panel #shipList {
+  margin-top: 8px;
+}
+
+.creations-panel.is-collapsed .creations-panel-body {
+  display: none;
+}
+
+.panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #cbd0dc;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.panel-toggle-title {
+  text-align: left;
+}
+
+.panel-toggle-icon {
+  margin-left: auto;
+  text-align: right;
+  flex: 0 0 auto;
+}
+
+.panel-toggle:hover,
+.panel-toggle.active {
+  background: transparent;
+  border: 0;
+  color: #f2f2f2;
 }
 
 .inline-bottom-controls {
@@ -1099,8 +1176,8 @@ canvas.catalog-drop-target {
   max-height: none;
   min-height: 0;
   gap: 8px;
-  overflow: auto;
-  padding-right: 6px;
+  overflow: visible;
+  padding-right: 0;
 }
 
 .catalog-piece-group {
@@ -1167,7 +1244,14 @@ canvas.catalog-drop-target {
   }
 
   .assembly-bottom-bar {
-    grid-template-columns: minmax(220px, 0.95fr) minmax(240px, 1fr);
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+}
+
+@media (max-width: 1080px) {
+  .assembly-bottom-bar {
+    grid-template-columns: 1fr;
+    max-height: 42vh;
   }
 }
 
@@ -1251,8 +1335,8 @@ canvas.catalog-drop-target {
   gap: 8px;
   max-height: none;
   min-height: 0;
-  overflow: auto;
-  padding: 2px 4px 10px 0;
+  overflow: visible;
+  padding: 2px 0 10px 0;
 }
 
 .assembly-mode .shape-palette-item.catalog-piece-item {
@@ -1344,9 +1428,9 @@ canvas.catalog-drop-target {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
-  max-height: 220px;
-  overflow: auto;
-  padding-right: 4px;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
   flex: 0 0 auto;
 }
 
