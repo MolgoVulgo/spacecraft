@@ -7,6 +7,7 @@ import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { createNavigationCubeViewApi } from './navigation-cube.js';
 import { createAssemblyPersistenceController } from './assembly-persistence-controller.js';
+import { createAssemblyInteractionController } from './assembly-drag-controller.js';
 import { buildShipCreation } from './ship-creation.js';
 import {
   LEGACY_ASSEMBLY_SIDE_VIEW_ID,
@@ -50,6 +51,7 @@ const state = {
   selectedEntityType: null,
   selectedId: null,
   selectedGroupIds: [],
+  selectionBatch: [],
   copiedSelection: null,
   selectedCatalogPieceId: null,
   nextInstanceId: 1,
@@ -72,31 +74,21 @@ const dom = {
   catalogSizeFilter: document.querySelector('#catalogSizeFilter'),
   catalogSizeList: document.querySelector('#catalogSizeList'),
   catalogProfileFilter: document.querySelector('#catalogProfileFilter'),
-  catalogSummary: document.querySelector('#catalogSummary'),
   instanceSelect: document.querySelector('#instanceSelect'),
-  duplicatePieceBtn: document.querySelector('#duplicatePieceBtn'),
-  removePieceBtn: document.querySelector('#removePieceBtn'),
-  createGroupBtn: document.querySelector('#createGroupBtn'),
-  ungroupBtn: document.querySelector('#ungroupBtn'),
-  renameGroupBtn: document.querySelector('#renameGroupBtn'),
   clearSceneBtn: document.querySelector('#clearSceneBtn'),
-  deselectBtn: document.querySelector('#deselectBtn'),
   colorInput: document.querySelector('#colorInput'),
   mirrorLengthBtn: document.querySelector('#mirrorLengthBtn'),
   mirrorWidthBtn: document.querySelector('#mirrorWidthBtn'),
   mirrorHeightBtn: document.querySelector('#mirrorHeightBtn'),
   resetMirrorsBtn: document.querySelector('#resetMirrorsBtn'),
-  heightStepInput: document.querySelector('#heightStepInput'),
-  heightInput: document.querySelector('#heightInput'),
-  moveUpBtn: document.querySelector('#moveUpBtn'),
-  moveDownBtn: document.querySelector('#moveDownBtn'),
   gridInput: document.querySelector('#gridInput'),
   showAnchorsInput: document.querySelector('#showAnchorsInput'),
-  statsOverlayTitle: document.querySelector('.stats-overlay-title'),
-  stats: document.querySelector('#stats'),
+  shipStatsOverlay: document.querySelector('.ship-stats-overlay'),
+  selectionStatsOverlay: document.querySelector('.selection-stats-overlay'),
+  selectionStatsTitle: document.querySelector('#selectionStatsTitle'),
+  shipStats: document.querySelector('#shipStats'),
+  selectionStats: document.querySelector('#selectionStats'),
   emptyHint: document.querySelector('#emptyHint'),
-  fitSelectedBtn: document.querySelector('#fitSelectedBtn'),
-  fitAllBtn: document.querySelector('#fitAllBtn'),
   screenshotBtn: document.querySelector('#screenshotBtn'),
   exportBlueprintBtn: document.querySelector('#exportBlueprintBtn'),
   shipList: document.querySelector('#shipList'),
@@ -110,6 +102,10 @@ const dom = {
   placedPanelBody: document.querySelector('#placedPanelBody'),
   togglePlacedPanelBtn: document.querySelector('#togglePlacedPanelBtn'),
   togglePlacedPanelIcon: document.querySelector('#togglePlacedPanelIcon'),
+  catalogPanel: document.querySelector('#catalogPanel'),
+  catalogPanelBody: document.querySelector('#catalogPanelBody'),
+  toggleCatalogPanelBtn: document.querySelector('#toggleCatalogPanelBtn'),
+  toggleCatalogPanelIcon: document.querySelector('#toggleCatalogPanelIcon'),
   helpPanel: document.querySelector('#helpPanel'),
   helpPanelBody: document.querySelector('#helpPanelBody'),
   toggleHelpPanelBtn: document.querySelector('#toggleHelpPanelBtn'),
@@ -164,9 +160,12 @@ orbitControls.enableDamping = true;
 orbitControls.dampingFactor = 0.08;
 orbitControls.screenSpacePanning = true;
 orbitControls.target.set(0, 0, 0);
+orbitControls.mouseButtons.LEFT = null;
+orbitControls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
 
 let assemblyViewController = null;
 let assemblyNavigationCubeOverlay = null;
+let assemblyInteractionController = null;
 
 const rootGroup = new THREE.Group();
 scene.add(rootGroup);
@@ -302,6 +301,74 @@ function getAssemblyGroupById(groupId) {
 function getSelectedAssemblyGroup() {
   if (state.selectedEntityType !== 'group') return null;
   return getAssemblyGroupById(state.selectedId);
+}
+
+function normalizeSelectionEntity(entity) {
+  if (!entity?.type || !entity?.id) return null;
+  if (entity.type === 'group') return getAssemblyGroupById(entity.id) ? { type: 'group', id: entity.id } : null;
+  const instance = getInstanceById(entity.id);
+  if (!instance || instance.groupId) return null;
+  return { type: 'piece', id: entity.id };
+}
+
+function getSelectionBatch() {
+  if (Array.isArray(state.selectionBatch) && state.selectionBatch.length) {
+    return state.selectionBatch.map(normalizeSelectionEntity).filter(Boolean);
+  }
+  if (state.selectedEntityType === 'group' && state.selectedId) return [{ type: 'group', id: state.selectedId }];
+  if (state.selectedEntityType === 'piece' && state.selectedId) return [{ type: 'piece', id: state.selectedId }];
+  if (Array.isArray(state.selectedGroupIds) && state.selectedGroupIds.length) {
+    return state.selectedGroupIds.map((id) => normalizeSelectionEntity({ type: 'piece', id })).filter(Boolean);
+  }
+  return [];
+}
+
+function hasSelection() {
+  return getSelectionBatch().length > 0;
+}
+
+function getSelectedEntityInstanceIds() {
+  const ids = new Set();
+  for (const entity of getSelectionBatch()) {
+    if (entity.type === 'group') {
+      const group = getAssemblyGroupById(entity.id);
+      for (const child of group?.children ?? []) ids.add(child.instanceId);
+      continue;
+    }
+    ids.add(entity.id);
+  }
+  return ids;
+}
+
+function selectionContainsEntity(entity) {
+  const candidate = normalizeSelectionEntity(entity);
+  if (!candidate) return false;
+  return getSelectionBatch().some((item) => item.type === candidate.type && item.id === candidate.id);
+}
+
+function applySelectionState(entities = []) {
+  const normalized = [];
+  const seen = new Set();
+  for (const entity of entities) {
+    const resolved = normalizeSelectionEntity(entity);
+    if (!resolved) continue;
+    const key = `${resolved.type}:${resolved.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(resolved);
+  }
+
+  state.selectionBatch = normalized;
+  state.selectedEntityType = null;
+  state.selectedId = null;
+  state.selectedGroupIds = normalized.filter((entity) => entity.type === 'piece').map((entity) => entity.id);
+
+  if (normalized.length === 1) {
+    state.selectedEntityType = normalized[0].type;
+    state.selectedId = normalized[0].id;
+    if (normalized[0].type === 'group') state.selectedGroupIds = [];
+    if (normalized[0].type === 'piece') syncAssemblyPaletteToSelectedInstance();
+  }
 }
 
 function getInstanceById(instanceId) {
@@ -686,56 +753,13 @@ function addSelectedCatalogPiece(position = null) {
   return addCatalogPieceById(catalogPiece.id, position);
 }
 
-function duplicateSelectedInstance() {
-  if (state.selectedEntityType === 'group') {
-    duplicateSelectedAssemblyGroup();
-    return;
-  }
-
-  const selected = getSelectedInstance();
-  if (!selected) return;
-  const catalogPiece = getCatalogPieceById(selected.catalogPieceId);
-  if (!catalogPiece) return;
-
-  const basePosition = selected.group.position.clone();
-  const offsets = [
-    new THREE.Vector3(40, 0, 0),
-    new THREE.Vector3(-40, 0, 0),
-    new THREE.Vector3(0, -30, 0),
-    new THREE.Vector3(0, 30, 0),
-    new THREE.Vector3(0, 0, 10),
-  ];
-
-  let position = null;
-  for (const offset of offsets) {
-    const candidate = basePosition.clone().add(offset);
-    const candidateBox = getInstanceReservationBox(selected, candidate);
-    if (!collidesWithOthers(candidateBox, null)) {
-      position = candidate;
-      break;
-    }
-  }
-
-  const clone = createInstance(catalogPiece, {
-    symmetry: selected.symmetry,
-    color: `#${selected.material.color.getHexString()}`,
-    position: position ?? findAvailablePosition(catalogPiece),
-  });
-
-  if (clone) {
-    selectPiece(clone.id);
-    fitCameraToObject(clone.group, false);
-    markShipDirty();
-  }
-}
-
 function disposeInstance(instance) {
   rootGroup.remove(instance.group);
   disposeInstanceResources(instance);
 }
 
 function removeSelectedInstance() {
-  if (state.selectedEntityType === 'group') {
+  if (getSelectionBatch().length === 1 && state.selectedEntityType === 'group') {
     removeSelectedAssemblyGroup();
     return;
   }
@@ -772,19 +796,11 @@ function clearScene(options = {}) {
 }
 
 function clearSelection() {
-  state.selectedEntityType = null;
-  state.selectedId = null;
-  state.selectedGroupIds = [];
+  applySelectionState([]);
 }
 
 function selectPiece(id) {
-  const instance = getInstanceById(id);
-  clearSelection();
-  if (instance) {
-    state.selectedEntityType = 'piece';
-    state.selectedId = id;
-    syncAssemblyPaletteToSelectedInstance();
-  }
+  applySelectionState(id ? [{ type: 'piece', id }] : []);
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
@@ -794,12 +810,7 @@ function selectPiece(id) {
 }
 
 function selectAssemblyGroup(groupId) {
-  const group = getAssemblyGroupById(groupId);
-  clearSelection();
-  if (group) {
-    state.selectedEntityType = 'group';
-    state.selectedId = groupId;
-  }
+  applySelectionState(groupId ? [{ type: 'group', id: groupId }] : []);
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
@@ -809,11 +820,7 @@ function selectAssemblyGroup(groupId) {
 }
 
 function selectPieceMulti(ids = []) {
-  clearSelection();
-  state.selectedGroupIds = ids.filter((id) => {
-    const instance = getInstanceById(id);
-    return instance && !instance.groupId;
-  });
+  applySelectionState(ids.map((id) => ({ type: 'piece', id })));
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
@@ -966,58 +973,6 @@ function removeSelectedAssemblyGroup() {
   markShipDirty();
 }
 
-function renameSelectedAssemblyGroup() {
-  const group = getSelectedAssemblyGroup();
-  if (!group) return;
-  const value = window.prompt('Nom du groupe', group.name);
-  if (value === null) return;
-  const nextName = value.trim();
-  if (!nextName) {
-    setMessage('Renommage refusé : nom vide.');
-    return;
-  }
-  group.name = nextName;
-  refreshInstanceList();
-  updateStats();
-  markShipDirty();
-}
-
-function duplicateSelectedAssemblyGroup() {
-  const source = getSelectedAssemblyGroup();
-  if (!source) return;
-  const offset = new THREE.Vector3(getMagnetStep(), 0, 0);
-  const clones = [];
-  for (const childRef of source.children) {
-    const sourceInstance = getInstanceById(childRef.instanceId);
-    const catalogPiece = getCatalogPieceById(sourceInstance?.catalogPieceId);
-    if (!sourceInstance || !catalogPiece) continue;
-    const clone = createInstance(catalogPiece, {
-      symmetry: sourceInstance.symmetry,
-      color: `#${sourceInstance.material.color.getHexString()}`,
-      position: source.origin.clone().add(offset).add(childRef.localPosition),
-      preservePosition: true,
-    });
-    if (!clone) {
-      for (const created of clones) {
-        disposeInstance(created);
-        state.instances = state.instances.filter((item) => item.id !== created.id);
-      }
-      setMessage('Duplication refusée : aucun espace libre pour le groupe.');
-      return;
-    }
-    clones.push(clone);
-  }
-
-  selectPieceMulti(clones.map((instance) => instance.id));
-  const group = createAssemblyGroupFromSelection();
-  if (!group) return;
-  group.name = `${source.name} copie`;
-  refreshInstanceList();
-  updateStats();
-  updateSelectionBox();
-  markShipDirty();
-}
-
 function refreshInstanceList() {
   dom.instanceSelect.innerHTML = '';
   for (const entry of getVisibleAssemblyEntries()) {
@@ -1043,34 +998,22 @@ function updateSelectionUi() {
   const selected = getSelectedInstance();
   const selectedAssemblyGroup = getSelectedAssemblyGroup();
   const hasSelected = Boolean(selected || selectedAssemblyGroup);
-  const hasAnySelection = hasSelected || state.selectedGroupIds.length > 0;
   for (const element of selectedControls) element.disabled = !hasSelected;
-  if (dom.duplicatePieceBtn) dom.duplicatePieceBtn.disabled = !hasSelected;
-  if (dom.removePieceBtn) dom.removePieceBtn.disabled = !hasAnySelection;
-  if (dom.deselectBtn) dom.deselectBtn.disabled = !hasAnySelection;
-  if (dom.fitSelectedBtn) dom.fitSelectedBtn.disabled = !hasAnySelection;
-  if (dom.createGroupBtn) dom.createGroupBtn.disabled = state.selectedGroupIds.length < 2;
-  if (dom.ungroupBtn) dom.ungroupBtn.disabled = !selectedAssemblyGroup;
-  if (dom.renameGroupBtn) dom.renameGroupBtn.disabled = !selectedAssemblyGroup;
-  if (dom.fitAllBtn) dom.fitAllBtn.disabled = state.instances.length === 0;
 
   if (!hasSelected) {
     dom.colorInput.value = DEFAULT_COLOR;
-    dom.heightInput.value = '0';
     setSymmetryButtonState({ length: false, width: false, height: false });
     return;
   }
 
   if (selected) {
     dom.colorInput.value = `#${selected.material.color.getHexString()}`;
-    dom.heightInput.value = String(Math.round(selected.group.position.z));
     setSymmetryButtonState(selected.symmetry);
     return;
   }
 
   const firstChild = getInstanceById(selectedAssemblyGroup.children[0]?.instanceId);
   dom.colorInput.value = firstChild ? `#${firstChild.material.color.getHexString()}` : DEFAULT_COLOR;
-  dom.heightInput.value = String(Math.round(selectedAssemblyGroup.origin.z));
   setSymmetryButtonState({ length: false, width: false, height: false });
 }
 
@@ -1434,8 +1377,10 @@ function calculateShipStats() {
 }
 
 function getActiveStatsSelection() {
-  const selectedAssemblyGroup = getSelectedAssemblyGroup();
-  if (selectedAssemblyGroup) {
+  const selectedEntities = getSelectionBatch();
+  if (selectedEntities.length === 1 && selectedEntities[0].type === 'group') {
+    const selectedAssemblyGroup = getAssemblyGroupById(selectedEntities[0].id);
+    if (!selectedAssemblyGroup) return { label: null, instances: state.instances, fallbackMissingToZero: false };
     return {
       label: `${selectedAssemblyGroup.name} (${selectedAssemblyGroup.children.length} pièce(s))`,
       instances: selectedAssemblyGroup.children.map((child) => getInstanceById(child.instanceId)).filter(Boolean),
@@ -1443,16 +1388,18 @@ function getActiveStatsSelection() {
     };
   }
 
-  const selectedGroupIds = Array.isArray(state.selectedGroupIds) ? state.selectedGroupIds.filter(Boolean) : [];
-  if (selectedGroupIds.length) {
+  if (selectedEntities.length > 1) {
+    const selectedInstances = getSelectedInstancesForCommands();
     return {
-      label: `Groupe (${selectedGroupIds.length} pièce(s))`,
-      instances: state.instances.filter((instance) => selectedGroupIds.includes(instance.id)),
+      label: `Sélection (${selectedInstances.length} pièce(s))`,
+      instances: selectedInstances,
       fallbackMissingToZero: false,
     };
   }
 
-  const selected = getSelectedInstance();
+  const selected = selectedEntities.length === 1 && selectedEntities[0].type === 'piece'
+    ? getInstanceById(selectedEntities[0].id)
+    : null;
   if (selected) {
     return {
       label: selected.label,
@@ -1482,31 +1429,42 @@ function formatStatsLines(computed, options = {}) {
 
 function updateStats() {
   const selection = getActiveStatsSelection();
-  const statsLines = formatStatsLines(
-    calculateShipStatsForInstances(selection.instances),
-    { fallbackMissingToZero: selection.fallbackMissingToZero },
-  );
+  const shipStatsLines = formatStatsLines(calculateShipStats(), { fallbackMissingToZero: false });
+  const selectionStatsLines = selection.label
+    ? formatStatsLines(
+      calculateShipStatsForInstances(selection.instances),
+      { fallbackMissingToZero: selection.fallbackMissingToZero },
+    )
+    : [];
 
-  if (!selection.label) {
-    if (dom.statsOverlayTitle) dom.statsOverlayTitle.textContent = 'Status Vaisseau';
-    dom.stats.textContent = [
-      ...statsLines,
+  if (dom.shipStats) {
+    dom.shipStats.textContent = [
+      ...shipStatsLines,
       state.lastMessage ? '' : null,
       state.lastMessage || null,
     ].filter(Boolean).join('\n');
+  }
+
+  if (!selection.label) {
+    if (dom.selectionStatsOverlay) dom.selectionStatsOverlay.hidden = true;
+    if (dom.selectionStatsTitle) dom.selectionStatsTitle.textContent = 'Info pièce';
+    if (dom.selectionStats) dom.selectionStats.textContent = 'Aucune sélection active.';
     return;
   }
 
-  if (dom.statsOverlayTitle) {
-    dom.statsOverlayTitle.textContent = getSelectedAssemblyGroup() || state.selectedGroupIds.length ? 'Info groupe' : 'Info pièce';
+  if (dom.selectionStatsOverlay) dom.selectionStatsOverlay.hidden = false;
+  if (dom.selectionStatsTitle) {
+    dom.selectionStatsTitle.textContent = getSelectionBatch().length !== 1 || getSelectedAssemblyGroup() ? 'Info groupe' : 'Info pièce';
   }
-  dom.stats.textContent = [
+  if (dom.selectionStats) {
+    dom.selectionStats.textContent = [
     selection.label,
     '',
-    ...statsLines,
+    ...selectionStatsLines,
     state.lastMessage ? '' : null,
     state.lastMessage || null,
   ].filter(Boolean).join('\n');
+  }
 }
 
 function setMessage(message) {
@@ -1533,17 +1491,28 @@ function fmt(value) {
 }
 
 function getSelectedInstancesForCommands() {
-  const selectedAssemblyGroup = getSelectedAssemblyGroup();
-  if (selectedAssemblyGroup) {
-    return selectedAssemblyGroup.children.map((child) => getInstanceById(child.instanceId)).filter(Boolean);
-  }
+  const instances = [];
+  const seen = new Set();
+  for (const entity of getSelectionBatch()) {
+    if (entity.type === 'group') {
+      const group = getAssemblyGroupById(entity.id);
+      for (const child of group?.children ?? []) {
+        if (seen.has(child.instanceId)) continue;
+        const instance = getInstanceById(child.instanceId);
+        if (!instance) continue;
+        seen.add(instance.id);
+        instances.push(instance);
+      }
+      continue;
+    }
 
-  const selectedGroupIds = Array.isArray(state.selectedGroupIds) ? state.selectedGroupIds.filter(Boolean) : [];
-  if (selectedGroupIds.length) {
-    return state.instances.filter((instance) => selectedGroupIds.includes(instance.id));
+    if (seen.has(entity.id)) continue;
+    const instance = getInstanceById(entity.id);
+    if (!instance) continue;
+    seen.add(instance.id);
+    instances.push(instance);
   }
-  const selected = getSelectedInstance();
-  return selected ? [selected] : [];
+  return instances;
 }
 
 function copySelectedInstances() {
@@ -1599,24 +1568,24 @@ function updateEmptyHint() {
 }
 
 function updateSelectionBox() {
-  const selectedGroup = getSelectedAssemblyGroup();
-  if (selectedGroup) {
+  const selectedEntities = getSelectionBatch();
+  if (selectedEntities.length === 1 && selectedEntities[0].type === 'group') {
+    const selectedGroup = getAssemblyGroupById(selectedEntities[0].id);
+    if (!selectedGroup) return;
     refreshAssemblyGroupRuntime(selectedGroup);
     selectionBox.box.copy(selectedGroup.bbox);
     selectionBox.visible = true;
     return;
   }
 
-  const multiSelection = state.selectedGroupIds
-    .map((id) => getInstanceById(id))
-    .filter(Boolean);
-  if (multiSelection.length) {
-    selectionBox.box.copy(computeBoundingBoxFromBoxes(multiSelection.map((instance) => getInstanceReservationBox(instance))));
+  const selectedInstances = getSelectedInstancesForCommands();
+  if (selectedInstances.length > 1) {
+    selectionBox.box.copy(computeBoundingBoxFromBoxes(selectedInstances.map((instance) => getInstanceReservationBox(instance))));
     selectionBox.visible = true;
     return;
   }
 
-  const selected = getSelectedInstance();
+  const selected = selectedInstances[0] ?? null;
   if (!selected) {
     selectionBox.visible = false;
     return;
@@ -1657,8 +1626,10 @@ function fitCameraToAll(renderNow = true) {
 }
 
 function fitCurrentSelection(renderNow = true) {
-  const selectedGroup = getSelectedAssemblyGroup();
-  if (selectedGroup) {
+  const selectedEntities = getSelectionBatch();
+  if (selectedEntities.length === 1 && selectedEntities[0].type === 'group') {
+    const selectedGroup = getAssemblyGroupById(selectedEntities[0].id);
+    if (!selectedGroup) return;
     refreshAssemblyGroupRuntime(selectedGroup);
     fitOrthographicBox(selectedGroup.bbox, 1.35);
     const center = selectedGroup.bbox.getCenter(new THREE.Vector3());
@@ -1669,9 +1640,9 @@ function fitCurrentSelection(renderNow = true) {
     return;
   }
 
-  const multiSelection = state.selectedGroupIds.map((id) => getInstanceById(id)).filter(Boolean);
-  if (multiSelection.length) {
-    const box = computeBoundingBoxFromBoxes(multiSelection.map((instance) => getInstanceReservationBox(instance)));
+  const selectedInstances = getSelectedInstancesForCommands();
+  if (selectedInstances.length > 1) {
+    const box = computeBoundingBoxFromBoxes(selectedInstances.map((instance) => getInstanceReservationBox(instance)));
     fitOrthographicBox(box, 1.35);
     const center = box.getCenter(new THREE.Vector3());
     orbitControls.target.copy(center);
@@ -1681,7 +1652,7 @@ function fitCurrentSelection(renderNow = true) {
     return;
   }
 
-  const selected = getSelectedInstance();
+  const selected = selectedInstances[0] ?? null;
   if (selected) fitCameraToObject(selected.group, renderNow);
 }
 
@@ -1832,10 +1803,124 @@ function pickInstance(event) {
   return state.instances.find((item) => item.id === instanceId) ?? null;
 }
 
+function getSelectableEntityFromInstance(instance) {
+  if (!instance) return null;
+  if (instance.groupId) return { type: 'group', id: instance.groupId, instanceId: instance.id };
+  return { type: 'piece', id: instance.id, instanceId: instance.id };
+}
+
+function pickSelectableEntity(event) {
+  return getSelectableEntityFromInstance(pickInstance(event));
+}
+
+function isInteractionBlockedTarget(target) {
+  return Boolean(target?.closest?.('.stats-overlay, .help-overlay, .navigation-cube-card, .left-panel'));
+}
+
+function refreshSelectionAfterChange() {
+  refreshInstanceList();
+  updateSelectionUi();
+  renderCatalogPieceOptions();
+  renderCatalogEditors();
+  updateStats();
+  updateSelectionBox();
+}
+
+function selectEntities(entities) {
+  applySelectionState(entities);
+  refreshSelectionAfterChange();
+}
+
+function clearSelectionAndRefresh() {
+  clearSelection();
+  refreshSelectionAfterChange();
+}
+
+function toggleSelectionEntity(entity) {
+  const resolved = normalizeSelectionEntity(entity);
+  if (!resolved) return;
+  const next = getSelectionBatch();
+  const index = next.findIndex((item) => item.type === resolved.type && item.id === resolved.id);
+  if (index >= 0) next.splice(index, 1);
+  else next.push(resolved);
+  selectEntities(next);
+}
+
+function resolveDragSelection(selectable) {
+  if (selectionContainsEntity(selectable) && getSelectionBatch().length > 1) return getSelectionBatch();
+  return [selectable];
+}
+
+function projectWorldPointToViewport(point) {
+  const viewportRect = dom.viewportStage.getBoundingClientRect();
+  const projected = point.clone().project(camera);
+  return {
+    x: ((projected.x + 1) * 0.5) * viewportRect.width,
+    y: ((1 - projected.y) * 0.5) * viewportRect.height,
+    visible: projected.z >= -1 && projected.z <= 1,
+  };
+}
+
+function isScreenPointInsideRect(point, rect) {
+  return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+}
+
+function collectMarqueeSelection(rect, minAnchorCount = 3) {
+  const selected = [];
+
+  for (const group of state.assemblyGroups) {
+    const anchors = getGroupExternalAnchors(group);
+    let count = 0;
+    for (const anchor of anchors) {
+      const projected = projectWorldPointToViewport(anchor.position);
+      if (projected.visible && isScreenPointInsideRect(projected, rect)) count += 1;
+      if (count >= minAnchorCount) break;
+    }
+    if (count >= minAnchorCount) selected.push({ type: 'group', id: group.id });
+  }
+
+  for (const instance of getLooseInstances()) {
+    const anchors = getWorldAttachmentAnchorsForInstance(instance);
+    let count = 0;
+    for (const anchor of anchors) {
+      const projected = projectWorldPointToViewport(anchor.position);
+      if (projected.visible && isScreenPointInsideRect(projected, rect)) count += 1;
+      if (count >= minAnchorCount) break;
+    }
+    if (count >= minAnchorCount) selected.push({ type: 'piece', id: instance.id });
+  }
+
+  return selected;
+}
+
 function intersectDragPlane(event, target) {
   setPointerFromEvent(event);
   raycaster.setFromCamera(pointer, camera);
   return raycaster.ray.intersectPlane(dragPlane, target);
+}
+
+function getActiveDragProjectionPlane() {
+  return getAssemblyProjectionPlane(state.viewMode);
+}
+
+function getProjectionPlaneNormal(plane) {
+  if (plane === 'xz') return new THREE.Vector3(0, 1, 0);
+  if (plane === 'yz') return new THREE.Vector3(1, 0, 0);
+  return new THREE.Vector3(0, 0, 1);
+}
+
+function constrainTargetToProjectionPlane(target, startPosition, plane = getActiveDragProjectionPlane()) {
+  const next = target.clone();
+  if (plane === 'xz') {
+    next.y = startPosition.y;
+    return next;
+  }
+  if (plane === 'yz') {
+    next.x = startPosition.x;
+    return next;
+  }
+  next.z = startPosition.z;
+  return next;
 }
 
 function snapValue(value, step) {
@@ -1844,8 +1929,11 @@ function snapValue(value, step) {
 
 function normalizeCandidatePosition(instance, position) {
   const next = position.clone();
-  next.z = instance.group.position.z;
+  const projectionPlane = getActiveDragProjectionPlane();
+  constrainTargetToProjectionPlane(next, instance.group.position, projectionPlane);
   snapPositionToHalfUnit(next);
+
+  if (projectionPlane !== 'xy') return next;
 
   // Priority 1 during drag: resolve a lateral anchor snap only while the pointer
   // is still close to the side contact position. Once the pointer moves one
@@ -2288,8 +2376,10 @@ function resolveSideAnchorSnapPositionForGroup(group, targetOrigin, options = {}
 
 function normalizeCandidateGroupOrigin(group, origin) {
   const next = origin.clone();
-  next.z = group.origin.z;
+  const projectionPlane = getActiveDragProjectionPlane();
+  constrainTargetToProjectionPlane(next, group.origin, projectionPlane);
   snapPositionToHalfUnit(next);
+  if (projectionPlane !== 'xy') return next;
   const sideSnap = resolveSideAnchorSnapPositionForGroup(group, next, {
     maxDistance: getSideSnapHoldDistance(),
     tangentLimit: Math.max(getMagnetStep() * SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER, 62.5),
@@ -2326,7 +2416,6 @@ function tryMoveAssemblyGroup(group, targetOrigin, options = {}) {
   group.origin.copy(resolvedOrigin);
   refreshAssemblyGroupRuntime(group);
   syncGroupInstanceWorldPositions(group);
-  dom.heightInput.value = String(Math.round(group.origin.z));
   updateAttachmentStates();
   updateStats();
   updateSelectionBox();
@@ -2353,7 +2442,6 @@ function tryMoveInstance(instance, targetPosition, reason = 'Déplacement refus�
   }
 
   instance.group.position.copy(resolvedPosition);
-  dom.heightInput.value = String(Math.round(instance.group.position.z));
   updateAttachmentStates();
   if (instance.invalidAttachment) setMessage('Placement sans ancrage compatible : contour rouge.');
   else setMessage('');
@@ -2398,7 +2486,12 @@ function applyDragPosition(instance, position) {
     setMessage('Déplacement ignoré : résolution hors limites.');
     return;
   }
-  const moved = tryMoveInstance(instance, next, 'Déplacement refusé : aucune position libre trouvée sur l’axe Z.', { autoVertical: true });
+  const moved = tryMoveInstance(
+    instance,
+    next,
+    'Déplacement refusé : aucune position libre trouvée sur l’axe Z.',
+    { autoVertical: getActiveDragProjectionPlane() === 'xy' },
+  );
   if (moved) state.drag.lastValidPosition.copy(instance.group.position);
 }
 
@@ -2412,50 +2505,134 @@ function applyGroupDragPosition(group, origin) {
     setMessage('Déplacement ignoré : résolution hors limites.');
     return;
   }
-  const moved = tryMoveAssemblyGroup(group, next, { autoVertical: true });
+  const moved = tryMoveAssemblyGroup(group, next, { autoVertical: getActiveDragProjectionPlane() === 'xy' });
   if (moved) state.drag.lastValidPosition.copy(group.origin);
 }
 
-function moveSelectedHeight(delta) {
+function applySelectionBatchDragPosition(entities, delta, plane = getActiveDragProjectionPlane()) {
+  const nextDelta = delta.clone();
+  if (plane === 'xz') nextDelta.y = 0;
+  else if (plane === 'yz') nextDelta.x = 0;
+  else nextDelta.z = 0;
+  snapPositionToHalfUnit(nextDelta);
+  if (tryMoveSelectionBatch(entities, nextDelta)) {
+    state.drag.lastValidPosition.copy(state.drag.startPosition.clone().add(nextDelta));
+  }
+}
+
+function tryMoveLooseSelection(instances, delta) {
+  if (!instances.length) return false;
+  const ignoredInstanceIds = new Set(instances.map((instance) => instance.id));
+  const candidateBoxes = instances.map((instance) => getInstanceBox(instance, instance.group.position.clone().add(delta)));
+  if (collidesBoxesWithScene(candidateBoxes, { ignoredInstanceIds })) {
+    setMessage('Déplacement refusé : collision avec une autre pièce.');
+    return false;
+  }
+
+  for (const instance of instances) {
+    instance.group.position.add(delta);
+  }
+  updateAttachmentStates();
+  updateStats();
+  updateSelectionBox();
+  setMessage('');
+  return true;
+}
+
+function tryMoveSelectionBatch(entities, delta) {
+  if (!entities.length) return false;
+  const ignoredInstanceIds = new Set();
+  const candidateBoxes = [];
+  const groupOrigins = new Map();
+  const looseInstances = [];
+
+  for (const entity of entities) {
+    if (entity.type === 'group') {
+      const group = getAssemblyGroupById(entity.id);
+      if (!group) continue;
+      const nextOrigin = group.origin.clone().add(delta);
+      groupOrigins.set(group.id, nextOrigin);
+      for (const child of group.children) {
+        ignoredInstanceIds.add(child.instanceId);
+      }
+      candidateBoxes.push(...getGroupChildBoxes(group, nextOrigin));
+      continue;
+    }
+
+    const instance = getInstanceById(entity.id);
+    if (!instance) continue;
+    ignoredInstanceIds.add(instance.id);
+    looseInstances.push(instance);
+    candidateBoxes.push(getInstanceBox(instance, instance.group.position.clone().add(delta)));
+  }
+
+  if (!candidateBoxes.length) return false;
+  if (collidesBoxesWithScene(candidateBoxes, { ignoredInstanceIds })) {
+    setMessage('Déplacement refusé : collision avec une autre pièce.');
+    return false;
+  }
+
+  for (const [groupId, nextOrigin] of groupOrigins) {
+    const group = getAssemblyGroupById(groupId);
+    if (!group) continue;
+    setGroupWorldPosition(group, nextOrigin);
+    refreshAssemblyGroupRuntime(group);
+  }
+  for (const instance of looseInstances) {
+    instance.group.position.add(delta);
+  }
+
+  updateAttachmentStates();
+  updateStats();
+  updateSelectionBox();
+  setMessage('');
+  return true;
+}
+
+function moveSelectedByDelta(delta) {
+  const selectedEntities = getSelectionBatch();
+  if (!selectedEntities.length) return;
+
+  if (selectedEntities.length > 1) {
+    const snappedDelta = delta.clone();
+    snapPositionToHalfUnit(snappedDelta);
+    if (tryMoveSelectionBatch(selectedEntities, snappedDelta)) markShipDirty();
+    return;
+  }
+
   const selectedGroup = getSelectedAssemblyGroup();
   if (selectedGroup) {
-    const before = selectedGroup.origin.z;
-    const next = selectedGroup.origin.clone();
-    next.z = snapValue(next.z + delta, getMagnetStep());
-    if (tryMoveAssemblyGroup(selectedGroup, next) && selectedGroup.origin.z !== before) markShipDirty();
+    const before = selectedGroup.origin.clone();
+    const next = snapPositionToHalfUnit(selectedGroup.origin.clone().add(delta.clone()));
+    if (tryMoveAssemblyGroup(selectedGroup, next) && !selectedGroup.origin.equals(before)) markShipDirty();
+    return;
+  }
+
+  const selectedLooseInstances = state.selectedGroupIds.map((id) => getInstanceById(id)).filter(Boolean);
+  if (selectedLooseInstances.length > 1) {
+    const snappedDelta = delta.clone();
+    snapPositionToHalfUnit(snappedDelta);
+    if (tryMoveLooseSelection(selectedLooseInstances, snappedDelta)) markShipDirty();
     return;
   }
 
   const selected = getSelectedInstance();
   if (!selected) return;
-  const before = selected.group.position.z;
-  const next = selected.group.position.clone();
-  next.z = snapValue(next.z + delta, getMagnetStep());
-  if (tryMoveInstance(selected, next, 'Hauteur refusée : collision avec une autre pièce.') && selected.group.position.z !== before) {
+  const before = selected.group.position.clone();
+  const next = snapPositionToHalfUnit(selected.group.position.clone().add(delta.clone()));
+  if (tryMoveInstance(selected, next, 'Déplacement refusé : collision avec une autre pièce.') && !selected.group.position.equals(before)) {
     markShipDirty();
   }
 }
 
-function setSelectedHeight(value) {
-  const selectedGroup = getSelectedAssemblyGroup();
-  if (selectedGroup) {
-    const before = selectedGroup.origin.z;
-    const next = selectedGroup.origin.clone();
-    next.z = snapValue(Number(value) || 0, getMagnetStep());
-    tryMoveAssemblyGroup(selectedGroup, next);
-    dom.heightInput.value = String(Math.round(selectedGroup.origin.z));
-    if (selectedGroup.origin.z !== before) markShipDirty();
-    return;
-  }
+function panSceneByDelta(delta) {
+  camera.position.add(delta);
+  orbitControls.target.add(delta);
+  orbitControls.update();
+}
 
-  const selected = getSelectedInstance();
-  if (!selected) return;
-  const before = selected.group.position.z;
-  const next = selected.group.position.clone();
-  next.z = snapValue(Number(value) || 0, getMagnetStep());
-  tryMoveInstance(selected, next, 'Hauteur refusée : collision avec une autre pièce.');
-  dom.heightInput.value = String(Math.round(selected.group.position.z));
-  if (selected.group.position.z !== before) markShipDirty();
+function moveSelectedHeight(delta) {
+  moveSelectedByDelta(new THREE.Vector3(0, 0, delta));
 }
 
 function getHeightStep() {
@@ -2502,16 +2679,13 @@ function onCanvasDrop(event) {
   addCatalogPieceById(pieceId, position);
 }
 
-function shouldPreserveSelectionOnPointerDown(target) {
-  return Boolean(target?.closest('button, input, select, textarea, label, a'));
-}
-
 function onGlobalPointerDown(event) {
   if (event.button !== 0) return;
   if (state.drag) return;
   if (!getSelectedInstance() && !getSelectedAssemblyGroup() && !state.selectedGroupIds.length) return;
 
   const target = event.target;
+  if (target?.closest?.('.stats-overlay, .help-overlay, .navigation-cube-card, .left-panel')) return;
   if (target === renderer.domElement) {
     const picked = pickInstance(event);
     if (!picked) {
@@ -2523,19 +2697,71 @@ function onGlobalPointerDown(event) {
     }
     return;
   }
+}
 
-  if (shouldPreserveSelectionOnPointerDown(target)) return;
-  clearSelection();
-  refreshInstanceList();
-  updateSelectionUi();
-  updateStats();
-  updateSelectionBox();
+function beginSelectionDrag(event, selectable, dragEntities) {
+  const picked = getInstanceById(selectable?.instanceId ?? selectable?.id);
+  if (!picked) return false;
+  const pickedGroup = selectable?.type === 'group' ? getAssemblyGroupById(selectable.id) : null;
+  return beginDragFromPick(event, picked, pickedGroup, 'pointer', dragEntities);
+}
+
+function updateSelectionDrag(event) {
+  onPointerMove(event);
+}
+
+function endSelectionDrag(event) {
+  onPointerUp(event);
+}
+
+function beginCameraPointerDrag() {
+  orbitControls.enabled = true;
+}
+
+function endCameraPointerDrag() {
+  orbitControls.enabled = true;
+}
+
+function beginDragFromPick(event, picked, pickedGroup, inputType = 'pointer', dragEntities = []) {
+  const projectionPlane = getActiveDragProjectionPlane();
+  if (pickedGroup) {
+    dragPlane.set(getProjectionPlaneNormal(projectionPlane), -getProjectionPlaneNormal(projectionPlane).dot(pickedGroup.origin));
+  } else {
+    dragPlane.set(getProjectionPlaneNormal(projectionPlane), -getProjectionPlaneNormal(projectionPlane).dot(picked.group.position));
+  }
+
+  if (!intersectDragPlane(event, dragHit)) return false;
+
+  state.drag = {
+    inputType,
+    pointerId: inputType === 'pointer' ? event.pointerId : null,
+    entityType: pickedGroup ? 'group' : 'piece',
+    instanceId: picked.id,
+    groupId: pickedGroup?.id ?? null,
+    entities: dragEntities.map((entity) => ({ type: entity.type, id: entity.id })),
+    startHit: dragHit.clone(),
+    startPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
+    offset: (pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone()).sub(dragHit),
+    lastValidPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
+  };
+
+  orbitControls.enabled = false;
+  dom.canvas.classList.add('dragging-piece');
+  if (inputType === 'pointer') dom.canvas.setPointerCapture?.(event.pointerId);
+  return true;
 }
 
 function onPointerDown(event) {
   if (event.button !== 0) return;
   const picked = pickInstance(event);
-  if (!picked) return;
+  if (!picked) {
+    clearSelection();
+    refreshInstanceList();
+    updateSelectionUi();
+    updateStats();
+    updateSelectionBox();
+    return;
+  }
 
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -2548,32 +2774,23 @@ function onPointerDown(event) {
   const pickedGroup = picked.groupId ? getAssemblyGroupById(picked.groupId) : null;
   if (pickedGroup) {
     selectAssemblyGroup(pickedGroup.id);
-    dragPlane.set(new THREE.Vector3(0, 0, 1), -pickedGroup.origin.z);
   } else {
     selectInstance(picked.id);
-    dragPlane.set(new THREE.Vector3(0, 0, 1), -picked.group.position.z);
   }
+}
 
-  if (!intersectDragPlane(event, dragHit)) return;
-
-  state.drag = {
-    pointerId: event.pointerId,
-    entityType: pickedGroup ? 'group' : 'piece',
-    instanceId: picked.id,
-    groupId: pickedGroup?.id ?? null,
-    startHit: dragHit.clone(),
-    startPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
-    offset: (pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone()).sub(dragHit),
-    lastValidPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
-  };
-
-  orbitControls.enabled = false;
-  dom.canvas.classList.add('dragging-piece');
-  dom.canvas.setPointerCapture?.(event.pointerId);
+function onMouseDown(event) {
+  if (event.button !== 2) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const picked = pickInstance(event);
+  if (!picked) return;
+  const pickedGroup = picked.groupId ? getAssemblyGroupById(picked.groupId) : null;
+  beginDragFromPick(event, picked, pickedGroup, 'mouse');
 }
 
 function onPointerMove(event) {
-  if (!state.drag || event.pointerId !== state.drag.pointerId) return;
+  if (!state.drag || state.drag.inputType !== 'pointer' || event.pointerId !== state.drag.pointerId) return;
   event.preventDefault();
   event.stopImmediatePropagation();
   const instance = state.instances.find((item) => item.id === state.drag.instanceId);
@@ -2581,19 +2798,56 @@ function onPointerMove(event) {
   if ((!instance && !group) || !intersectDragPlane(event, dragHit)) return;
 
   const delta = dragHit.clone().sub(state.drag.startHit);
-  const target = state.drag.startPosition.clone().add(delta);
-  target.z = state.drag.startPosition.z;
-  if (state.drag.entityType === 'group' && group) applyGroupDragPosition(group, target);
+  const target = constrainTargetToProjectionPlane(
+    state.drag.startPosition.clone().add(delta),
+    state.drag.startPosition,
+    getActiveDragProjectionPlane(),
+  );
+  if (state.drag.entities?.length > 1) applySelectionBatchDragPosition(state.drag.entities, delta, getActiveDragProjectionPlane());
+  else if (state.drag.entityType === 'group' && group) applyGroupDragPosition(group, target);
   else if (instance) applyDragPosition(instance, target);
 }
 
 function onPointerUp(event) {
-  if (!state.drag || event.pointerId !== state.drag.pointerId) return;
+  if (!state.drag || state.drag.inputType !== 'pointer' || event.pointerId !== state.drag.pointerId) return;
   event.preventDefault();
   event.stopImmediatePropagation();
 
   const moved = !state.drag.startPosition.equals(state.drag.lastValidPosition);
   dom.canvas.releasePointerCapture?.(event.pointerId);
+  state.drag = null;
+  orbitControls.enabled = true;
+  dom.canvas.classList.remove('dragging-piece');
+  updateStats();
+  updateSelectionBox();
+  if (moved) markShipDirty();
+}
+
+function onMouseMove(event) {
+  if (!state.drag || state.drag.inputType !== 'mouse') return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const instance = state.instances.find((item) => item.id === state.drag.instanceId);
+  const group = state.drag.groupId ? getAssemblyGroupById(state.drag.groupId) : null;
+  if ((!instance && !group) || !intersectDragPlane(event, dragHit)) return;
+
+  const delta = dragHit.clone().sub(state.drag.startHit);
+  const target = constrainTargetToProjectionPlane(
+    state.drag.startPosition.clone().add(delta),
+    state.drag.startPosition,
+    getActiveDragProjectionPlane(),
+  );
+  if (state.drag.entities?.length > 1) applySelectionBatchDragPosition(state.drag.entities, delta, getActiveDragProjectionPlane());
+  else if (state.drag.entityType === 'group' && group) applyGroupDragPosition(group, target);
+  else if (instance) applyDragPosition(instance, target);
+}
+
+function onMouseUp(event) {
+  if (!state.drag || state.drag.inputType !== 'mouse' || event.button !== 2) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  const moved = !state.drag.startPosition.equals(state.drag.lastValidPosition);
   state.drag = null;
   orbitControls.enabled = true;
   dom.canvas.classList.remove('dragging-piece');
@@ -3365,20 +3619,6 @@ function renderCatalogEditors() {
   const spec = getSpecProfile(catalogPiece.spec_profile_id);
   const recipe = getRecipe(catalogPiece.recipe_id);
 
-  if (dom.catalogSummary) {
-    const lines = [
-      `id               : ${catalogPiece.id}`,
-      `label            : ${catalogPiece.label_fr}`,
-      `famille          : ${family?.label_fr ?? catalogPiece.family_id}`,
-      `taille           : ${size?.label ?? catalogPiece.size_id}`,
-      `variante         : ${getVariantDisplayLabel(shape, size)} (${shape?.id ?? catalogPiece.shape_variant_id})`,
-      `profil           : ${spec?.id ?? catalogPiece.spec_profile_id}`,
-    ];
-    if (IS_EDITOR) lines.push(`recette          : ${recipe?.id ?? catalogPiece.recipe_id ?? 'aucune'}`);
-    else lines.push(`profil type      : ${spec?.profile_type ?? 'standard'}`);
-    dom.catalogSummary.textContent = lines.join('\n');
-  }
-
   if (!IS_EDITOR) return;
   renderShapeEditor(shape);
   renderSpecEditor(spec);
@@ -3930,6 +4170,10 @@ function setPlacedPanelCollapsed(collapsed) {
   setPanelCollapsed(dom.placedPanel, dom.placedPanelBody, dom.togglePlacedPanelBtn, dom.togglePlacedPanelIcon, collapsed);
 }
 
+function setCatalogPanelCollapsed(collapsed) {
+  setPanelCollapsed(dom.catalogPanel, dom.catalogPanelBody, dom.toggleCatalogPanelBtn, dom.toggleCatalogPanelIcon, collapsed);
+}
+
 function setHelpPanelCollapsed(collapsed) {
   setPanelCollapsed(dom.helpPanel, dom.helpPanelBody, dom.toggleHelpPanelBtn, dom.toggleHelpPanelIcon, collapsed);
 }
@@ -3974,8 +4218,9 @@ async function init() {
   selectInstance(null);
   updateEmptyHint();
   bindEvents();
-  setCreationsPanelCollapsed(false);
-  setPlacedPanelCollapsed(false);
+  setCreationsPanelCollapsed(true);
+  setPlacedPanelCollapsed(true);
+  setCatalogPanelCollapsed(true);
   setHelpPanelCollapsed(true);
   await state.persistence.init();
   mountAssemblyNavigationCube();
@@ -4021,19 +4266,7 @@ function bindEvents() {
     }
     selectPieceMulti(selectedOptions.filter((option) => option.dataset.entryType === 'piece').map((option) => option.value));
   });
-  dom.duplicatePieceBtn?.addEventListener('click', duplicateSelectedInstance);
-  dom.removePieceBtn?.addEventListener('click', removeSelectedInstance);
-  dom.createGroupBtn?.addEventListener('click', createAssemblyGroupFromSelection);
-  dom.ungroupBtn?.addEventListener('click', ungroupSelectedAssemblyGroup);
-  dom.renameGroupBtn?.addEventListener('click', renameSelectedAssemblyGroup);
   dom.clearSceneBtn.addEventListener('click', clearScene);
-  dom.deselectBtn?.addEventListener('click', () => {
-    clearSelection();
-    refreshInstanceList();
-    updateSelectionUi();
-    updateStats();
-    updateSelectionBox();
-  });
   dom.shipList?.addEventListener('change', () => {
     dom.openShipBtn.disabled = !dom.shipList.value;
   });
@@ -4044,6 +4277,10 @@ function bindEvents() {
   dom.togglePlacedPanelBtn?.addEventListener('click', () => {
     const collapsed = dom.placedPanel?.classList.contains('is-collapsed');
     setPlacedPanelCollapsed(!collapsed);
+  });
+  dom.toggleCatalogPanelBtn?.addEventListener('click', () => {
+    const collapsed = dom.catalogPanel?.classList.contains('is-collapsed');
+    setCatalogPanelCollapsed(!collapsed);
   });
   dom.toggleHelpPanelBtn?.addEventListener('click', () => {
     const collapsed = dom.helpPanel?.classList.contains('is-collapsed');
@@ -4103,10 +4340,6 @@ function bindEvents() {
   dom.mirrorWidthBtn?.addEventListener('click', () => toggleSelectedSymmetry('width'));
   dom.mirrorHeightBtn?.addEventListener('click', () => toggleSelectedSymmetry('height'));
 
-  dom.moveUpBtn?.addEventListener('click', () => moveSelectedHeight(getHeightStep()));
-  dom.moveDownBtn?.addEventListener('click', () => moveSelectedHeight(-getHeightStep()));
-  dom.heightInput.addEventListener('change', () => setSelectedHeight(dom.heightInput.value));
-
   dom.gridInput.checked = true;
   dom.gridInput?.addEventListener('change', () => {
     if (!ASSEMBLY_MAGNET_ENABLED) return;
@@ -4119,14 +4352,51 @@ function bindEvents() {
   });
 
   dom.screenshotBtn?.addEventListener('click', takeScreenshot);
-  dom.fitSelectedBtn?.addEventListener('click', () => fitCurrentSelection());
-  dom.fitAllBtn?.addEventListener('click', () => fitCameraToAll());
-
-  document.addEventListener('pointerdown', onGlobalPointerDown, true);
-  renderer.domElement.addEventListener('pointerdown', onPointerDown, true);
-  renderer.domElement.addEventListener('pointermove', onPointerMove, true);
-  renderer.domElement.addEventListener('pointerup', onPointerUp, true);
-  renderer.domElement.addEventListener('pointercancel', onPointerUp, true);
+  // Legacy input handlers audited in `main.js`: `onGlobalPointerDown`, `onPointerDown`,
+  // `onPointerMove`, `onPointerUp`, `onMouseDown`, `onMouseMove`, `onMouseUp`.
+  // They stay as movement primitives, but input ownership is now centralized below.
+  assemblyInteractionController = createAssemblyInteractionController({
+    canvas: renderer.domElement,
+    viewportStage: dom.viewportStage,
+    orbitControls,
+    isBlockedTarget: isInteractionBlockedTarget,
+    pickSelectable: pickSelectableEntity,
+    resolveDragSelection,
+    selectEntities,
+    toggleSelectionEntity,
+    clearSelection: clearSelectionAndRefresh,
+    hasSelection,
+    beginObjectDrag: beginSelectionDrag,
+    updateObjectDrag: updateSelectionDrag,
+    endObjectDrag: endSelectionDrag,
+    beginCameraDrag: beginCameraPointerDrag,
+    endCameraDrag: endCameraPointerDrag,
+    collectMarqueeSelection,
+    moveSelectedByDelta,
+    moveSceneByDelta: panSceneByDelta,
+    getMoveStep: getMagnetStep,
+  });
+  renderer.domElement.addEventListener('pointerdown', (event) => {
+    if (assemblyInteractionController.onPointerDown(event)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+  renderer.domElement.addEventListener('pointermove', (event) => {
+    if (assemblyInteractionController.onPointerMove(event)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+  renderer.domElement.addEventListener('pointerup', (event) => {
+    if (assemblyInteractionController.onPointerUp(event)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+  renderer.domElement.addEventListener('pointercancel', (event) => {
+    assemblyInteractionController.onPointerCancel(event);
+  }, true);
   renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
   renderer.domElement.addEventListener('dragover', onCanvasDragOver);
   renderer.domElement.addEventListener('dragleave', onCanvasDragLeave);
@@ -4136,6 +4406,7 @@ function bindEvents() {
     const tagName = document.activeElement?.tagName?.toLowerCase();
     if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') return;
     const key = event.key.toLowerCase();
+    const selectionActive = hasSelection();
 
     if ((event.ctrlKey || event.metaKey) && key === 'c') {
       if (copySelectedInstances()) event.preventDefault();
@@ -4157,22 +4428,21 @@ function bindEvents() {
       return;
     }
 
+    if (assemblyInteractionController.onKeyDown(event)) {
+      event.preventDefault();
+      return;
+    }
+
     if (key === 'f') {
-      if (getSelectedInstance() || getSelectedAssemblyGroup() || state.selectedGroupIds.length) fitCurrentSelection();
+      if (selectionActive) fitCurrentSelection();
       else fitCameraToAll();
     }
     if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
-      if (getSelectedInstance() || getSelectedAssemblyGroup() || state.selectedGroupIds.length) fitCurrentSelection();
+      if (selectionActive) fitCurrentSelection();
     }
     if (key === 'r') resetView();
-    if (event.key === 'PageUp') moveSelectedHeight(getHeightStep());
-    if (event.key === 'PageDown') moveSelectedHeight(-getHeightStep());
     if (event.key === 'Escape') {
-      clearSelection();
-      refreshInstanceList();
-      updateSelectionUi();
-      updateStats();
-      updateSelectionBox();
+      clearSelectionAndRefresh();
     }
     if (event.key === 'Delete' || event.key === 'Backspace') removeSelectedInstance();
   });
@@ -4180,5 +4450,6 @@ function bindEvents() {
 
 init().catch((error) => {
   console.error(error);
-  dom.stats.textContent = String(error.message || error);
+  if (dom.shipStats) dom.shipStats.textContent = String(error.message || error);
+  if (dom.selectionStats) dom.selectionStats.textContent = 'Aucune sélection active.';
 });

@@ -89,8 +89,29 @@ export function createNavigationCubeOverlay(options) {
   card.addEventListener('click', stopCardPointer);
   card.addEventListener('dblclick', stopCardPointer);
 
+  const header = document.createElement('button');
+  header.type = 'button';
+  header.className = 'panel-toggle navigation-cube-toggle';
+  header.setAttribute('aria-expanded', 'false');
+  header.setAttribute('aria-controls', 'navigationCubeBody');
+
+  const headerTitle = document.createElement('span');
+  headerTitle.className = 'panel-toggle-title';
+  headerTitle.textContent = 'Cube de navigation';
+
+  const headerIcon = document.createElement('span');
+  headerIcon.className = 'panel-toggle-icon';
+  headerIcon.textContent = '[+]';
+
+  header.append(headerTitle, headerIcon);
+
   const grid = document.createElement('div');
   grid.className = 'navigation-cube-grid';
+
+  const body = document.createElement('div');
+  body.className = 'navigation-cube-body';
+  body.id = 'navigationCubeBody';
+  body.hidden = true;
 
   let activeViewId = viewApi.getActiveViewId?.() ?? null;
   const buttonMap = new Map();
@@ -111,8 +132,20 @@ export function createNavigationCubeOverlay(options) {
     buttonMap.set(item.id, button);
     grid.append(button);
   }
+  body.append(grid);
 
-  card.append(grid);
+  header.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const collapsed = !body.hidden;
+    body.hidden = collapsed;
+    card.classList.toggle('is-collapsed', collapsed);
+    header.setAttribute('aria-expanded', String(!collapsed));
+    headerIcon.textContent = collapsed ? '[+]' : '[-]';
+  });
+
+  card.classList.add('is-collapsed');
+  card.append(header, body);
   root.append(card);
 
   return Object.freeze({
@@ -132,6 +165,9 @@ export function createNavigationCubeOverlay(options) {
     },
     getButton(viewId) {
       return buttonMap.get(viewId) ?? null;
+    },
+    getBodyElement() {
+      return body;
     },
   });
 }
