@@ -53,6 +53,7 @@ export function buildShipCreation({
   createdAt = nowIso(),
   updatedAt = createdAt,
   pieces = [],
+  groups = [],
   computedSpecs = createEmptyComputedSpecs(catalog),
   metadata = {},
 } = {}) {
@@ -65,6 +66,7 @@ export function buildShipCreation({
     updated_at: updatedAt,
     ship: {
       pieces: cloneJson(Array.isArray(pieces) ? pieces : []),
+      groups: cloneJson(Array.isArray(groups) ? groups : []),
       computed_specs: cloneJson(computedSpecs ?? {}),
     },
     metadata: cloneJson(metadata ?? {}),
@@ -95,6 +97,9 @@ export function validateShipCreation(payload, options = {}) {
   if (!payload.updated_at) errors.push('updated_at absent.');
   if (!payload.ship || typeof payload.ship !== 'object') errors.push('ship absent.');
   if (!Array.isArray(payload.ship?.pieces)) errors.push('ship.pieces doit etre un tableau.');
+  if (payload.ship?.groups !== undefined && !Array.isArray(payload.ship?.groups)) {
+    errors.push('ship.groups doit etre un tableau.');
+  }
   if (!payload.ship?.computed_specs || typeof payload.ship.computed_specs !== 'object') {
     warnings.push('ship.computed_specs absent ou invalide; recalcul local requis.');
   }
@@ -120,6 +125,7 @@ export function prepareImportedShipCreation(payload, { catalog, currentCatalogVe
     createdAt: importedAt,
     updatedAt: importedAt,
     pieces: payload.ship?.pieces ?? [],
+    groups: payload.ship?.groups ?? [],
     computedSpecs: payload.ship?.computed_specs ?? createEmptyComputedSpecs(catalog),
     metadata: {
       ...(payload.metadata ?? {}),
