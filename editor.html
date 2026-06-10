@@ -18,17 +18,17 @@
           <div id="baseModelTree" class="base-model-tree collapsible-tree"></div>
         </section>
 
-        <section class="stats" id="editorStats"></section>
+        <section class="stats" id="editorStats" hidden></section>
       </aside>
 
       <main class="editor-main">
         <section class="editor-topbar">
           <div id="selectedBaseSummary" class="summary-box selected-summary"></div>
           <div class="topbar-controls">
-            <label for="shapeVariantSelect">Variante active</label>
+            <label for="shapeVariantSelect">Pièce active</label>
             <select id="shapeVariantSelect"></select>
-            <label for="catalogPieceSelect">Entrée catalogue liée</label>
-            <select id="catalogPieceSelect"></select>
+            <label for="catalogPieceSelect" hidden>Pièce catalogue interne</label>
+            <select id="catalogPieceSelect" hidden disabled></select>
           </div>
           <div class="topbar-actions">
             <label class="inline-action-label" for="newVariantTypeSelect">Type variante</label>
@@ -41,8 +41,8 @@
             <button id="createVariantBtn" type="button" class="primary">Créer variante</button>
             <button id="duplicateVariantBtn" type="button">Dupliquer variante</button>
             <button id="deleteVariantBtn" type="button">Supprimer variante</button>
-            <button id="createCatalogPieceBtn" type="button">Créer entrée catalogue</button>
-            <button id="deleteCatalogPieceBtn" type="button">Supprimer entrée</button>
+            <button id="createCatalogPieceBtn" type="button" hidden>Créer entrée catalogue</button>
+            <button id="deleteCatalogPieceBtn" type="button" hidden>Supprimer entrée</button>
             <button id="resetPreviewBtn" type="button">Vue reset</button>
             <button id="fitPreviewBtn" type="button">Cadrer pièce</button>
             <button id="saveDraftBtn" type="button">Enregistrer brouillon</button>
@@ -55,9 +55,6 @@
 
         <section class="editor-viewport-wrap">
           <canvas id="editorViewer"></canvas>
-          <div class="help">
-            Éditeur : cellules 1×1×1 · clic sur une face = sélection face · points rouges = ancres · molette/drag = caméra
-          </div>
         </section>
 
         <section class="editor-workbench">
@@ -87,7 +84,7 @@
               </div>
             </section>
 
-            <section class="control-block editor-form">
+            <section id="cellEditorCard" class="control-block editor-form">
               <label>Cellules 1×1×1</label>
               <div class="form-grid compact-form-grid">
                 <span>X</span><input id="cellXInput" type="number" min="0" step="1" value="0" />
@@ -103,7 +100,7 @@
               <div id="cellSummary" class="summary-box"></div>
             </section>
 
-            <section class="control-block editor-form variant-face-panel">
+            <section id="variantFaceEditorCard" class="control-block editor-form variant-face-panel">
               <label>Corrections de forme par face</label>
               <div id="variantFaceSummary" class="summary-box">Aucune face sélectionnée.</div>
               <div class="button-grid compact variant-action-grid">

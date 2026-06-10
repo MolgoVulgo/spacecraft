@@ -62,7 +62,9 @@ const dom = {
   removeCellBtn: document.querySelector('#removeCellBtn'),
   resetFullBoxBtn: document.querySelector('#resetFullBoxBtn'),
   clearCellsBtn: document.querySelector('#clearCellsBtn'),
+  cellEditorCard: document.querySelector('#cellEditorCard'),
   cellSummary: document.querySelector('#cellSummary'),
+  variantFaceEditorCard: document.querySelector('#variantFaceEditorCard'),
   variantFaceSummary: document.querySelector('#variantFaceSummary'),
   roundFaceBtn: document.querySelector('#roundFaceBtn'),
   chamferFaceBtn: document.querySelector('#chamferFaceBtn'),
@@ -190,6 +192,22 @@ function getPiece(id) { return state.repo?.pieces.get(id) ?? null; }
 function selectedShape() { return getShape(state.selectedShapeId); }
 function selectedPiece() { return getPiece(state.selectedCatalogPieceId); }
 
+function isBaseShape(shape = selectedShape()) {
+  if (!shape) return false;
+  return shape.shape_family === 'base_block' || Number(shape.variant_index) === 0 || String(shape.id ?? '').endsWith('_base');
+}
+
+function isEditableVariantShape(shape = selectedShape()) {
+  return Boolean(shape && !isBaseShape(shape));
+}
+
+function syncShapeEditorCards() {
+  const showCellEditor = isBaseShape();
+  const showVariantFaceEditor = isEditableVariantShape();
+  if (dom.cellEditorCard) dom.cellEditorCard.hidden = !showCellEditor;
+  if (dom.variantFaceEditorCard) dom.variantFaceEditorCard.hidden = !showVariantFaceEditor;
+}
+
 function slugifyId(value) {
   return String(value ?? '')
     .trim()
@@ -281,17 +299,26 @@ function renderBaseModels() {
 
       const variants = document.createElement('div');
       variants.className = 'tree-variants';
-      for (const shape of findShapesForSize(sizeId)) {
+      const pieces = (state.catalog.catalog_pieces ?? [])
+        .filter((piece) => piece.family_id === group.family_id && piece.size_id === sizeId)
+        .sort((a, b) => {
+          const shapeA = getShape(a.shape_variant_id);
+          const shapeB = getShape(b.shape_variant_id);
+          return (Number(shapeA?.variant_index) || 0) - (Number(shapeB?.variant_index) || 0)
+            || String(a.label_fr ?? a.id).localeCompare(String(b.label_fr ?? b.id), 'fr');
+        });
+      for (const piece of pieces) {
+        const shape = getShape(piece.shape_variant_id);
+        if (!shape) continue;
         const variant = document.createElement('button');
         variant.type = 'button';
         variant.className = 'tree-variant-button';
-        if (isBaseActive && shape.id === state.selectedShapeId) variant.classList.add('active');
-        variant.textContent = `↳ ${shape.label ?? shape.id}`;
+        if (isBaseActive && piece.id === state.selectedCatalogPieceId) variant.classList.add('active');
+        variant.textContent = `↳ ${piece.label_fr ?? shape.label ?? piece.id}`;
         variant.addEventListener('click', () => {
           selectBaseModel(group, sizeId, { keepView: true });
+          state.selectedCatalogPieceId = piece.id;
           state.selectedShapeId = shape.id;
-          const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === shape.id);
-          if (piece) state.selectedCatalogPieceId = piece.id;
           state.selectedFace = null;
           renderAll();
         });
@@ -330,20 +357,81 @@ function findShapesForSize(sizeId = state.selectedBase?.size_id) {
     .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0) || a.id.localeCompare(b.id));
 }
 
+function uniqueById(items = []) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    result.push(item);
+  }
+  return result;
+}
+
+function findShapesForCurrentBase() {
+  if (!state.selectedBase) return findShapesForSize();
+  const shapes = findCatalogPiecesForBase()
+    .map((piece) => getShape(piece.shape_variant_id))
+    .filter(Boolean);
+  const selected = selectedShape();
+  if (selected?.size_id === state.selectedBase.size_id && !shapes.some((shape) => shape.id === selected.id)) {
+    shapes.push(selected);
+  }
+  return uniqueById(shapes)
+    .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0) || a.id.localeCompare(b.id));
+}
+
 function findCatalogPiecesForBase() {
   if (!state.selectedBase) return [];
   return (state.catalog.catalog_pieces ?? [])
     .filter((piece) => piece.family_id === state.selectedBase.family_id && piece.size_id === state.selectedBase.size_id)
-    .sort((a, b) => a.label_fr.localeCompare(b.label_fr, 'fr'));
+    .sort((a, b) => {
+      const shapeA = getShape(a.shape_variant_id);
+      const shapeB = getShape(b.shape_variant_id);
+      return (Number(shapeA?.variant_index) || 0) - (Number(shapeB?.variant_index) || 0)
+        || String(a.label_fr ?? a.id).localeCompare(String(b.label_fr ?? b.id), 'fr');
+    });
+}
+
+function findCatalogPiecesForShape(shapeId = state.selectedShapeId) {
+  if (!shapeId) return [];
+  return (state.catalog.catalog_pieces ?? [])
+    .filter((piece) => piece.shape_variant_id === shapeId)
+    .sort((a, b) => String(a.label_fr ?? a.id).localeCompare(String(b.label_fr ?? b.id), 'fr'));
+}
+
+function findLinkedCatalogPiece(shapeId = state.selectedShapeId) {
+  const basePiece = findCatalogPiecesForBase().find((piece) => piece.shape_variant_id === shapeId);
+  return basePiece ?? findCatalogPiecesForShape(shapeId)[0] ?? null;
+}
+
+function formatCatalogPieceRef(piece) {
+  if (!piece) return 'aucune';
+  const spec = piece.spec_profile_id ? ` · spec ${piece.spec_profile_id}` : '';
+  const recipe = piece.recipe_id ? ` · recette ${piece.recipe_id}` : '';
+  return `${piece.label_fr ?? piece.id} [${piece.id}] · shape ${piece.shape_variant_id}${spec}${recipe}`;
+}
+
+function formatCatalogPieceList(pieces, maxItems = 3) {
+  const visible = pieces.slice(0, maxItems).map(formatCatalogPieceRef);
+  const remaining = pieces.length - visible.length;
+  return `${visible.join(' | ')}${remaining > 0 ? ` | +${remaining} autre(s)` : ''}`;
+}
+
+function syncSelectedCatalogPieceWithShape() {
+  const linkedPiece = findLinkedCatalogPiece();
+  state.selectedCatalogPieceId = linkedPiece?.id ?? null;
+  return linkedPiece;
 }
 
 function renderShapeSelect() {
-  const shapes = findShapesForSize();
+  const shapes = findShapesForCurrentBase();
   dom.shapeVariantSelect.innerHTML = '';
   for (const shape of shapes) {
+    const piece = findLinkedCatalogPiece(shape.id);
     const option = document.createElement('option');
     option.value = shape.id;
-    option.textContent = `${shape.id} · ${shape.label ?? `v${pad2(shape.variant_index)}`} · ${shape.generation?.mode ?? '?'}`;
+    option.textContent = `${piece?.label_fr ?? shape.label ?? `v${pad2(shape.variant_index)}`} · ${shape.generation?.mode ?? '?'}`;
     option.selected = shape.id === state.selectedShapeId;
     dom.shapeVariantSelect.append(option);
   }
@@ -351,11 +439,25 @@ function renderShapeSelect() {
 
 function renderCatalogPieceSelect() {
   const pieces = findCatalogPiecesForBase();
+  const linkedPiece = findLinkedCatalogPiece();
+  if (!state.selectedCatalogPieceId || !pieces.some((piece) => piece.id === state.selectedCatalogPieceId)) {
+    state.selectedCatalogPieceId = linkedPiece?.id ?? null;
+  }
+
   dom.catalogPieceSelect.innerHTML = '';
+  if (!state.selectedCatalogPieceId) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Aucune entrée catalogue liée à cette variante';
+    option.selected = true;
+    dom.catalogPieceSelect.append(option);
+  }
+
   for (const piece of pieces) {
     const option = document.createElement('option');
+    const isLinkedToActiveShape = piece.shape_variant_id === state.selectedShapeId;
     option.value = piece.id;
-    option.textContent = `${piece.label_fr} · ${piece.shape_variant_id} · ${piece.spec_profile_id}`;
+    option.textContent = `${isLinkedToActiveShape ? '✓ ' : ''}${piece.label_fr ?? piece.id} · shape ${piece.shape_variant_id} · spec ${piece.spec_profile_id ?? 'n/a'}`;
     option.selected = piece.id === state.selectedCatalogPieceId;
     dom.catalogPieceSelect.append(option);
   }
@@ -364,14 +466,15 @@ function renderCatalogPieceSelect() {
 function renderSelectedBaseSummary() {
   const base = state.selectedBase;
   const shape = selectedShape();
-  const piece = selectedPiece();
+  const linkedPieces = findCatalogPiecesForShape(shape?.id);
+  const linkedCatalogText = linkedPieces.length ? formatCatalogPieceList(linkedPieces, 2) : 'pièce catalogue interne absente';
   const size = getSize(base?.size_id);
   const cells = shape ? getShapeCells(shape, size) : [];
   dom.selectedBaseSummary.textContent = base ? [
     `modèle       : ${base.piece_label_fr} ${base.size_id}`,
     `family_id    : ${base.family_id}`,
     `shape        : ${shape?.id ?? 'aucune'}`,
-    `catalog      : ${piece?.id ?? 'aucune entrée liée'}`,
+    `pièce        : ${linkedCatalogText}`,
     `cellules     : ${cells.length} bloc(s) 1×1×1`,
     state.message ? `message      : ${state.message}` : '',
   ].filter(Boolean).join('\n') : 'Aucun modèle sélectionné.';
@@ -548,6 +651,10 @@ function cellKey(x, y, z) { return `${x}:${y}:${z}`; }
 function setCell(enabled) {
   const shape = selectedShape();
   if (!shape) return;
+  if (!isBaseShape(shape)) {
+    setMessage('Modification cellules refusée : réservée au modèle de base.');
+    return;
+  }
   ensureVoxelGeneration(shape);
   const size = getSize(shape.size_id);
   const x = Math.floor(Number(dom.cellXInput.value));
@@ -572,6 +679,10 @@ function isCellInside(size, x, y, z) {
 function resetFullBox() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!isBaseShape(shape)) {
+    setMessage('Réinitialisation cellules refusée : réservée au modèle de base.');
+    return;
+  }
   ensureVoxelGeneration(shape);
   shape.generation.cells = fullCells(getSize(shape.size_id));
   markShapeDirty(shape, 'cells_reset_full_box');
@@ -581,6 +692,10 @@ function resetFullBox() {
 function clearCells() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!isBaseShape(shape)) {
+    setMessage('Vidage cellules refusé : réservé au modèle de base.');
+    return;
+  }
   ensureVoxelGeneration(shape);
   shape.generation.cells = [];
   markShapeDirty(shape, 'cells_cleared');
@@ -654,11 +769,12 @@ function createVariantFromBase() {
   const next = getNextVariantIndex(size.id);
   const variantType = getCurrentNewVariantType();
   const id = uniqueId(`shape_${size.id}_${variantType}_v${pad2(next)}`, existingIds);
+  const label = `${state.selectedBase.piece_label_fr} ${size.id} · ${getVariantTypeLabel(variantType)} ${pad2(next)}`;
   const shape = {
     id,
     size_id: size.id,
     variant_index: next,
-    label: `${size.label ?? size.id} · ${getVariantTypeLabel(variantType)} ${pad2(next)}`,
+    label,
     shape_family: variantType === 'block' ? 'block' : variantType,
     simplified: true,
     fidelity: { target: 'functional_silhouette', ignore_cosmetic_details: true },
@@ -677,7 +793,9 @@ function createVariantFromBase() {
   state.catalog.shape_variants.push(shape);
   rebuildRepo();
   state.selectedShapeId = id;
-  setMessage(`Variante créée : ${id} (${getVariantTypeLabel(variantType)}).`);
+  const piece = createCatalogPieceForShape(shape, { label_fr: label, source: 'catalog_editor_variant_create' });
+  state.selectedCatalogPieceId = piece?.id ?? null;
+  setMessage(`Variante créée : ${label}. Pièce Assembly créée : ${piece?.id ?? 'n/a'}.`);
   renderAll();
 }
 
@@ -694,31 +812,41 @@ function duplicateVariant() {
   const next = getNextVariantIndex(source.size_id);
   const id = uniqueId(`shape_${source.size_id}_v${pad2(next)}`, new Set((state.catalog.shape_variants ?? []).map((shape) => shape.id)));
   const clone = structuredClone(source);
+  const sourcePiece = selectedPiece() ?? findLinkedCatalogPiece(source.id);
   clone.id = id;
   clone.variant_index = next;
-  clone.label = `${source.label ?? source.id} copie ${pad2(next)}`;
+  clone.label = `${sourcePiece?.label_fr ?? source.label ?? source.id} copie ${pad2(next)}`;
   clone.status = 'draft';
   clone.metadata = { ...(clone.metadata ?? {}), source: 'catalog_editor_duplicate', duplicated_from: source.id };
+  delete clone.metadata.catalog_piece_id;
+  delete clone.metadata.catalog_piece_sync;
   state.catalog.shape_variants.push(clone);
   rebuildRepo();
   state.selectedShapeId = id;
-  setMessage(`Variante dupliquée : ${id}.`);
+  const piece = createCatalogPieceForShape(clone, { label_fr: clone.label, source: 'catalog_editor_variant_duplicate' });
+  state.selectedCatalogPieceId = piece?.id ?? null;
+  setMessage(`Variante dupliquée : ${clone.label}. Pièce Assembly créée : ${piece?.id ?? 'n/a'}.`);
   renderAll();
 }
 
 function deleteVariant() {
   const shape = selectedShape();
   if (!shape) return;
-  const usedBy = (state.catalog.catalog_pieces ?? []).filter((piece) => piece.shape_variant_id === shape.id);
-  if (usedBy.length) {
-    setMessage(`Suppression refusée : variante utilisée par ${usedBy.length} entrée(s) catalogue.`);
-    renderStats();
+  if (isBaseShape(shape)) {
+    setMessage(`Suppression refusée : ${shape.id} est un modèle de base protégé.`);
+    renderAll();
     return;
   }
+  const usedBy = findCatalogPiecesForShape(shape.id);
+  const removedPieceIds = usedBy.map((piece) => piece.id);
+  if (usedBy.length) state.catalog.catalog_pieces = state.catalog.catalog_pieces.filter((piece) => piece.shape_variant_id !== shape.id);
   state.catalog.shape_variants = state.catalog.shape_variants.filter((item) => item.id !== shape.id);
   rebuildRepo();
-  state.selectedShapeId = findShapesForSize()[0]?.id ?? null;
-  setMessage(`Variante supprimée : ${shape.id}.`);
+  const nextPiece = findCatalogPiecesForBase()[0] ?? null;
+  state.selectedCatalogPieceId = nextPiece?.id ?? null;
+  state.selectedShapeId = nextPiece?.shape_variant_id ?? findShapesForCurrentBase()[0]?.id ?? findShapesForSize()[0]?.id ?? null;
+  syncSelectedCatalogPieceWithShape();
+  setMessage(`Variante supprimée : ${shape.id}${removedPieceIds.length ? ` · pièce(s) Assembly supprimée(s) : ${removedPieceIds.join(', ')}` : ''}.`);
   renderAll();
 }
 
@@ -765,25 +893,29 @@ function ensureRecipe(spec, familyId, sizeId, profileType = 'standard') {
   return recipe;
 }
 
-function createCatalogPiece() {
-  if (!state.selectedBase || !state.selectedShapeId) return;
+function createCatalogPieceForShape(shape, options = {}) {
+  if (!state.selectedBase || !shape) return null;
   const family = getFamily(state.selectedBase.family_id);
   const size = getSize(state.selectedBase.size_id);
-  const shape = selectedShape();
-  if (!family || !size || !shape) return;
-  if (shape.size_id !== size.id) {
-    setMessage(`Création refusée : variante ${shape.id} incompatible avec ${size.id}.`);
-    renderStats();
-    return;
-  }
-  const profileType = 'standard';
+  if (!family || !size || shape.size_id !== size.id) return null;
+
+  const existing = findCatalogPiecesForBase().find((piece) => piece.shape_variant_id === shape.id);
+  if (existing) return existing;
+
+  const profileType = options.profileType ?? 'standard';
   const spec = ensureSpecProfile(family.id, size.id, profileType);
   const recipe = ensureRecipe(spec, family.id, size.id, profileType);
-  const variantCode = shape.variant_index === 0 ? 'base' : `v${pad2(shape.variant_index)}`;
-  const id = uniqueId(`piece_${family.id}_${size.id}_${variantCode}_${profileType}`, new Set((state.catalog.catalog_pieces ?? []).map((piece) => piece.id)));
+  const variantCode = Number(shape.variant_index) === 0 ? 'base' : `v${pad2(shape.variant_index)}`;
+  const id = uniqueId(
+    `piece_${family.id}_${size.id}_${variantCode}_${profileType}`,
+    new Set((state.catalog.catalog_pieces ?? []).map((piece) => piece.id)),
+  );
+  const label = options.label_fr
+    ?? shape.label
+    ?? `${state.selectedBase.piece_label_fr} ${size.id}${Number(shape.variant_index) ? ` ${variantCode}` : ''}`;
   const piece = {
     id,
-    label_fr: `${state.selectedBase.piece_label_fr} ${size.id}${shape.variant_index ? ` ${variantCode}` : ''}`,
+    label_fr: label,
     family_id: family.id,
     size_id: size.id,
     shape_variant_id: shape.id,
@@ -791,29 +923,48 @@ function createCatalogPiece() {
     recipe_id: recipe.id,
     fixed_catalog_entry: true,
     availability: { status: 'unknown', unlock: null },
-    metadata: { source: 'catalog_editor', base_model: true, notes: [] },
+    metadata: {
+      source: options.source ?? 'catalog_editor',
+      variant_owned_shape: true,
+      base_model: isBaseShape(shape),
+      notes: [],
+    },
   };
+
   state.catalog.catalog_pieces ??= [];
   state.catalog.catalog_pieces.push(piece);
+  shape.metadata ??= {};
+  shape.metadata.catalog_piece_id = piece.id;
+  shape.metadata.catalog_piece_sync = 'owned_by_variant';
   rebuildRepo();
-  state.selectedCatalogPieceId = id;
-  setMessage(`Entrée catalogue créée : ${id}.`);
+  return piece;
+}
+
+function createCatalogPiece() {
+  const shape = selectedShape();
+  if (!shape) return;
+  const piece = createCatalogPieceForShape(shape, { source: 'catalog_editor_repair' });
+  if (!piece) {
+    setMessage(`Création interne refusée : variante ${shape.id} incompatible avec ${state.selectedBase?.size_id ?? 'taille inconnue'}.`);
+    renderStats();
+    return;
+  }
+  state.selectedCatalogPieceId = piece.id;
+  setMessage(`Pièce catalogue interne prête : ${piece.id}.`);
   renderAll();
 }
 
 function deleteCatalogPiece() {
   const piece = selectedPiece();
   if (!piece) return;
-  state.catalog.catalog_pieces = state.catalog.catalog_pieces.filter((item) => item.id !== piece.id);
-  rebuildRepo();
-  state.selectedCatalogPieceId = findCatalogPiecesForBase()[0]?.id ?? null;
-  setMessage(`Entrée catalogue supprimée : ${piece.id}.`);
-  renderAll();
+  setMessage(`Suppression isolée refusée : ${piece.id} appartient à la variante. Supprimer la variante supprime aussi sa pièce Assembly.`);
+  renderStats();
 }
 
 function renderShapeForm() {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
+  syncShapeEditorCards();
   dom.shapeIdInput.value = shape?.id ?? '';
   dom.shapeLabelInput.value = shape?.label ?? '';
   dom.shapeFamilyInput.value = shape?.shape_family ?? '';
@@ -837,6 +988,8 @@ function updateShapeIdentity() {
   shape.status = dom.shapeStatusSelect.value;
   shape.metadata ??= {};
   shape.metadata.updated_at = new Date().toISOString();
+  const piece = findLinkedCatalogPiece(shape.id);
+  if (piece) piece.label_fr = shape.label;
   renderAll(false);
 }
 
@@ -966,6 +1119,11 @@ function operationScopeKey(op) {
 function createOperationFromSelectedFace(type) {
   const shape = selectedShape();
   const selectedFace = state.selectedFace;
+  if (shape && !isEditableVariantShape(shape)) {
+    setMessage('Correction refusée : réservée aux variantes.');
+    renderOperations();
+    return;
+  }
   if (!shape || !selectedFace) {
     setMessage('Correction refusée : aucune face sélectionnée.');
     renderOperations();
@@ -1006,6 +1164,11 @@ function createOperationFromSelectedFace(type) {
 function removeFaceOperation() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!isEditableVariantShape(shape)) {
+    setMessage('Suppression correction refusée : réservée aux variantes.');
+    renderOperations();
+    return;
+  }
   ensureVoxelGeneration(shape);
   const operations = shape.generation.operations ?? [];
   let index = -1;
@@ -1030,6 +1193,10 @@ function removeFaceOperation() {
 
 function renderVariantFaceSummary() {
   if (!dom.variantFaceSummary) return;
+  if (!isEditableVariantShape()) {
+    dom.variantFaceSummary.textContent = 'Corrections réservées aux variantes.';
+    return;
+  }
   const face = state.selectedFace;
   if (!face) {
     dom.variantFaceSummary.textContent = 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.';
@@ -1603,6 +1770,7 @@ function resetPreview() {
 }
 
 function renderStats() {
+  if (!dom.stats) return;
   const base = state.selectedBase;
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
@@ -1895,12 +2063,11 @@ function bindEvents() {
   dom.shapeVariantSelect.addEventListener('change', () => {
     state.selectedShapeId = dom.shapeVariantSelect.value;
     state.selectedFace = null;
-    const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === state.selectedShapeId);
-    if (piece) state.selectedCatalogPieceId = piece.id;
+    syncSelectedCatalogPieceWithShape();
     renderAll();
   });
   dom.catalogPieceSelect.addEventListener('change', () => {
-    state.selectedCatalogPieceId = dom.catalogPieceSelect.value;
+    state.selectedCatalogPieceId = dom.catalogPieceSelect.value || null;
     state.selectedFace = null;
     const piece = selectedPiece();
     if (piece) state.selectedShapeId = piece.shape_variant_id;
@@ -1997,5 +2164,5 @@ async function init() {
 
 init().catch((error) => {
   console.error(error);
-  dom.stats.textContent = String(error.message || error);
+  if (dom.stats) dom.stats.textContent = String(error.message || error);
 });
