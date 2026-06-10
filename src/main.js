@@ -14,6 +14,7 @@ import { createCommandStack } from './history/command-stack.js';
 import { createMoveCommand } from './history/commands/move-command.js';
 import { resolveRuntimePath } from './runtime-paths.js';
 import { buildShipCreation } from './ship-creation.js';
+import { getDefaultUserSettings, loadUserSettings, saveUserSettings } from './user-settings.js';
 import {
   LEGACY_ASSEMBLY_SIDE_VIEW_ID,
   createAssemblyViewController,
@@ -36,16 +37,15 @@ const SYMMETRY_BUTTON_ICONS = {
 };
 const THEME_COLORS = {
   anchor: 0xd82020,
-  edgeValid: 0x000000,
-  edgeInvalid: 0xff2d2d,
-  selectionHitbox: 0x2f80ff,
 };
 const ANCHOR_COLOR = THEME_COLORS.anchor;
-const EDGE_COLOR_VALID = THEME_COLORS.edgeValid;
-const EDGE_COLOR_INVALID = THEME_COLORS.edgeInvalid;
-const SELECTION_HITBOX_COLOR = THEME_COLORS.selectionHitbox;
 const APP_MODE = document.body.dataset.appMode === 'editor' ? 'editor' : 'assembly';
 const IS_EDITOR = APP_MODE === 'editor';
+const initialUserSettings = loadUserSettings();
+
+let edgeColorValidHex = Number.parseInt(initialUserSettings.viewport.edgeColor.replace('#', ''), 16);
+let edgeColorInvalidHex = Number.parseInt(initialUserSettings.selection.collisionColor.replace('#', ''), 16);
+let selectionHitboxColorHex = Number.parseInt(initialUserSettings.selection.selectionColor.replace('#', ''), 16);
 
 const state = {
   catalog: null,
@@ -67,6 +67,8 @@ const state = {
   viewMode: 'top',
   showAnchors: false,
   persistence: null,
+  userSettings: initialUserSettings,
+  userConfigDraft: null,
 };
 
 const dom = {
@@ -99,6 +101,43 @@ const dom = {
   shipList: document.querySelector('#shipList'),
   shipNameInput: document.querySelector('#shipNameInput'),
   shipStorageStatus: document.querySelector('#shipStorageStatus'),
+  openUserConfigBtn: document.querySelector('#openUserConfigBtn'),
+  userConfigModal: document.querySelector('#userConfigModal'),
+  closeUserConfigBtn: document.querySelector('#closeUserConfigBtn'),
+  cancelUserConfigBtn: document.querySelector('#cancelUserConfigBtn'),
+  saveUserConfigBtn: document.querySelector('#saveUserConfigBtn'),
+  resetUserConfigBtn: document.querySelector('#resetUserConfigBtn'),
+  userConfigModalTitle: document.querySelector('#userConfigModalTitle'),
+  userConfigModalContext: document.querySelector('#userConfigModalContext'),
+  userConfigInterfaceTitle: document.querySelector('#userConfigInterfaceTitle'),
+  userConfigViewportTitle: document.querySelector('#userConfigViewportTitle'),
+  userConfigCameraTitle: document.querySelector('#userConfigCameraTitle'),
+  userConfigSelectionTitle: document.querySelector('#userConfigSelectionTitle'),
+  userConfigEditorTitle: document.querySelector('#userConfigEditorTitle'),
+  userConfigPathsTitle: document.querySelector('#userConfigPathsTitle'),
+  userConfigStorageTitle: document.querySelector('#userConfigStorageTitle'),
+  userConfigThemeSelect: document.querySelector('#userConfigThemeSelect'),
+  userConfigLanguageSelect: document.querySelector('#userConfigLanguageSelect'),
+  userConfigEdgeColorInput: document.querySelector('#userConfigEdgeColorInput'),
+  userConfigRightMouseModeSelect: document.querySelector('#userConfigRightMouseModeSelect'),
+  userConfigRotationSensitivityInput: document.querySelector('#userConfigRotationSensitivityInput'),
+  userConfigPanSensitivityInput: document.querySelector('#userConfigPanSensitivityInput'),
+  userConfigDepthSensitivityInput: document.querySelector('#userConfigDepthSensitivityInput'),
+  userConfigZoomSensitivityInput: document.querySelector('#userConfigZoomSensitivityInput'),
+  userConfigInvertYToggle: document.querySelector('#userConfigInvertYToggle'),
+  userConfigKeyboardLayoutSelect: document.querySelector('#userConfigKeyboardLayoutSelect'),
+  userConfigKeyboardInputModeSelect: document.querySelector('#userConfigKeyboardInputModeSelect'),
+  userConfigSelectionColorInput: document.querySelector('#userConfigSelectionColorInput'),
+  userConfigCollisionColorInput: document.querySelector('#userConfigCollisionColorInput'),
+  userConfigUndoLimitInput: document.querySelector('#userConfigUndoLimitInput'),
+  userConfigAutosaveEnabledToggle: document.querySelector('#userConfigAutosaveEnabledToggle'),
+  userConfigAutosaveIntervalInput: document.querySelector('#userConfigAutosaveIntervalInput'),
+  userConfigImportDirInput: document.querySelector('#userConfigImportDirInput'),
+  userConfigExportDirInput: document.querySelector('#userConfigExportDirInput'),
+  userConfigStorageMode: document.querySelector('#userConfigStorageMode'),
+  userConfigActiveShip: document.querySelector('#userConfigActiveShip'),
+  userConfigLastSave: document.querySelector('#userConfigLastSave'),
+  userConfigStorageInfo: document.querySelector('#userConfigStorageInfo'),
   creationsPanel: document.querySelector('#creationsPanel'),
   creationsPanelBody: document.querySelector('#creationsPanelBody'),
   toggleCreationsPanelBtn: document.querySelector('#toggleCreationsPanelBtn'),
@@ -172,7 +211,7 @@ let assemblyViewController = null;
 let assemblyNavigationCubeOverlay = null;
 let assemblyInteractionController = null;
 let assemblyMovementController = null;
-const historyStack = createCommandStack({ limit: 10 });
+const historyStack = createCommandStack({ limit: state.userSettings.editor.undoLimit });
 
 const rootGroup = new THREE.Group();
 scene.add(rootGroup);
@@ -187,7 +226,7 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const dragPlane = new THREE.Plane();
 const dragHit = new THREE.Vector3();
-const selectionBox = new THREE.Box3Helper(new THREE.Box3(), SELECTION_HITBOX_COLOR);
+const selectionBox = new THREE.Box3Helper(new THREE.Box3(), selectionHitboxColorHex);
 selectionBox.visible = false;
 selectionBox.renderOrder = 1000;
 selectionBox.material.depthTest = true;
@@ -623,7 +662,7 @@ function createInstance(catalogPiece, options = {}) {
   mesh.name = `${catalogPiece.id}_${id}`;
   mesh.userData.instanceId = id;
 
-  const edgeMaterial = new THREE.LineBasicMaterial({ color: EDGE_COLOR_VALID, transparent: true, opacity: 0.9 });
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: edgeColorValidHex, transparent: true, opacity: 0.9 });
   const edges = new THREE.LineSegments(createAssemblyEdgeGeometry(catalogPiece, geometry), edgeMaterial);
   edges.visible = true;
   edges.userData.instanceId = id;
@@ -1667,6 +1706,28 @@ function updateSelectionBox() {
   selectionBox.visible = true;
 }
 
+function getCameraOrbitTarget() {
+  const selectedEntities = getSelectionBatch();
+  if (selectedEntities.length === 1 && selectedEntities[0].type === 'group') {
+    const selectedGroup = getAssemblyGroupById(selectedEntities[0].id);
+    if (!selectedGroup) return new THREE.Vector3(0, 0, 0);
+    refreshAssemblyGroupRuntime(selectedGroup);
+    return selectedGroup.bbox.getCenter(new THREE.Vector3());
+  }
+
+  const selectedInstances = getSelectedInstancesForCommands();
+  if (selectedInstances.length > 1) {
+    return computeBoundingBoxFromBoxes(selectedInstances.map((instance) => getInstanceReservationBox(instance))).getCenter(new THREE.Vector3());
+  }
+  if (selectedInstances[0]) {
+    return getInstanceReservationBox(selectedInstances[0]).getCenter(new THREE.Vector3());
+  }
+  if (state.instances.length > 0) {
+    return new THREE.Box3().setFromObject(rootGroup).getCenter(new THREE.Vector3());
+  }
+  return new THREE.Vector3(0, 0, 0);
+}
+
 function fitCameraToObject(object, renderNow = true) {
   if (!object) return;
   const box = new THREE.Box3().setFromObject(object);
@@ -2217,7 +2278,7 @@ function updateAttachmentStates() {
     const valid = connected.has(instance.id);
     instance.invalidAttachment = !valid;
     instance.attachmentReason = valid ? 'connected_to_root' : 'not_connected_to_root';
-    instance.edgeMaterial?.color?.setHex?.(valid ? EDGE_COLOR_VALID : EDGE_COLOR_INVALID);
+    instance.edgeMaterial?.color?.setHex?.(valid ? edgeColorValidHex : edgeColorInvalidHex);
     if (instance.edges) instance.edges.visible = true;
   }
 }
@@ -2731,11 +2792,32 @@ function endSelectionDrag(event) {
   onPointerUp(event);
 }
 
-function beginCameraPointerDrag() {
+function beginCameraPointerDrag(_event, options = {}) {
+  const mode = options.mode ?? 'moveScene';
+  const target = options.target;
+  if (target) orbitControls.target.copy(target);
+  orbitControls.mouseButtons.LEFT = mode === 'orbit' ? THREE.MOUSE.ROTATE : null;
+  orbitControls.mouseButtons.RIGHT = mode === 'orbit' ? THREE.MOUSE.ROTATE : null;
   orbitControls.enabled = true;
+  orbitControls.update();
+}
+
+function updateCameraPointerDrag(_event, options = {}) {
+  if (options.mode !== 'moveScene') return;
+  const delta = options.delta ?? { x: 0, y: 0 };
+  const config = options.config ?? state.userSettings.camera;
+  const step = getMagnetStep() * 0.05;
+  const sceneDelta = new THREE.Vector3(
+    delta.x * step * (Number.isFinite(config.panSensitivity) ? config.panSensitivity : 1),
+    -delta.y * step * (Number.isFinite(config.depthSensitivity) ? config.depthSensitivity : 1),
+    0,
+  );
+  panSceneByDelta(sceneDelta);
 }
 
 function endCameraPointerDrag() {
+  orbitControls.mouseButtons.LEFT = null;
+  orbitControls.mouseButtons.RIGHT = state.userSettings.camera.rightMouseMode === 'orbitCamera' ? THREE.MOUSE.ROTATE : null;
   orbitControls.enabled = true;
 }
 
@@ -3484,6 +3566,238 @@ function formatDateTime(value) {
   return date.toLocaleString('fr-FR');
 }
 
+const USER_CONFIG_I18N = {
+  fr: {
+    title: 'Configuration utilisateur',
+    context: 'Réglages locaux de l’interface Assembly.',
+    interface: 'Interface',
+    viewport: 'Viewport',
+    camera: 'Caméra',
+    selection: 'Sélection',
+    editor: 'Éditeur',
+    paths: 'Chemins',
+    storage: 'Stockage local',
+    labels: {
+      theme: 'Thème',
+      language: 'Langue',
+      edgeColor: 'Couleur des arêtes',
+      rightMouseMode: 'Comportement clic droit',
+      rightMouseMoveScene: 'Déplacer la scène',
+      rightMouseOrbitCamera: 'Orbiter la caméra',
+      rotationSensitivity: 'Sensibilité rotation',
+      panSensitivity: 'Sensibilité pan',
+      depthSensitivity: 'Sensibilité profondeur',
+      zoomSensitivity: 'Sensibilité zoom',
+      invertY: 'Inverser axe Y',
+      keyboardLayout: 'Disposition clavier',
+      keyboardInputMode: 'Mode entrée clavier',
+      selectionColor: 'Couleur de sélection',
+      collisionColor: 'Couleur collision',
+      undoLimit: 'Limite undo/redo',
+      autosaveEnabled: 'Autosave activé',
+      autosaveInterval: 'Interval autosave (s)',
+      importDir: 'Dossier import par défaut',
+      exportDir: 'Dossier export par défaut',
+      storageMode: 'Mode',
+      activeShip: 'Création active',
+      lastSave: 'Dernier save',
+      storageInfo: 'Info stockage',
+    },
+    close: 'Fermer',
+    cancel: 'Annuler',
+    save: 'Enregistrer',
+    defaults: 'Par défaut',
+  },
+  en: {
+    title: 'User configuration',
+    context: 'Local settings for the Assembly interface.',
+    interface: 'Interface',
+    viewport: 'Viewport',
+    camera: 'Camera',
+    selection: 'Selection',
+    editor: 'Editor',
+    paths: 'Paths',
+    storage: 'Local storage',
+    labels: {
+      theme: 'Theme',
+      language: 'Language',
+      edgeColor: 'Edge color',
+      rightMouseMode: 'Right mouse behavior',
+      rightMouseMoveScene: 'Move scene',
+      rightMouseOrbitCamera: 'Orbit camera',
+      rotationSensitivity: 'Rotation sensitivity',
+      panSensitivity: 'Pan sensitivity',
+      depthSensitivity: 'Depth sensitivity',
+      zoomSensitivity: 'Zoom sensitivity',
+      invertY: 'Invert Y axis',
+      keyboardLayout: 'Keyboard layout',
+      keyboardInputMode: 'Keyboard input mode',
+      selectionColor: 'Selection color',
+      collisionColor: 'Collision color',
+      undoLimit: 'Undo/redo limit',
+      autosaveEnabled: 'Autosave enabled',
+      autosaveInterval: 'Autosave interval (s)',
+      importDir: 'Default import directory',
+      exportDir: 'Default export directory',
+      storageMode: 'Mode',
+      activeShip: 'Active creation',
+      lastSave: 'Last save',
+      storageInfo: 'Storage info',
+    },
+    close: 'Close',
+    cancel: 'Cancel',
+    save: 'Save',
+    defaults: 'Defaults',
+  },
+};
+
+function applyThemeSetting(theme) {
+  document.body.dataset.userTheme = theme === 'light' ? 'light' : 'dark';
+}
+
+function applyLanguageSetting(language) {
+  const labels = USER_CONFIG_I18N[language === 'en' ? 'en' : 'fr'];
+  document.documentElement.lang = language === 'en' ? 'en' : 'fr';
+  if (dom.userConfigModalTitle) dom.userConfigModalTitle.textContent = labels.title;
+  if (dom.userConfigModalContext) dom.userConfigModalContext.textContent = labels.context;
+  if (dom.userConfigInterfaceTitle) dom.userConfigInterfaceTitle.textContent = labels.interface;
+  if (dom.userConfigViewportTitle) dom.userConfigViewportTitle.textContent = labels.viewport;
+  if (dom.userConfigCameraTitle) dom.userConfigCameraTitle.textContent = labels.camera;
+  if (dom.userConfigSelectionTitle) dom.userConfigSelectionTitle.textContent = labels.selection;
+  if (dom.userConfigEditorTitle) dom.userConfigEditorTitle.textContent = labels.editor;
+  if (dom.userConfigPathsTitle) dom.userConfigPathsTitle.textContent = labels.paths;
+  if (dom.userConfigStorageTitle) dom.userConfigStorageTitle.textContent = labels.storage;
+  if (dom.closeUserConfigBtn) dom.closeUserConfigBtn.textContent = labels.close;
+  if (dom.cancelUserConfigBtn) dom.cancelUserConfigBtn.textContent = labels.cancel;
+  if (dom.saveUserConfigBtn) dom.saveUserConfigBtn.textContent = labels.save;
+  if (dom.resetUserConfigBtn) dom.resetUserConfigBtn.textContent = labels.defaults;
+  document.querySelector('label[for="userConfigThemeSelect"]')?.replaceChildren(labels.labels.theme);
+  document.querySelector('label[for="userConfigLanguageSelect"]')?.replaceChildren(labels.labels.language);
+  document.querySelector('label[for="userConfigEdgeColorInput"]')?.replaceChildren(labels.labels.edgeColor);
+  document.querySelector('label[for="userConfigRightMouseModeSelect"]')?.replaceChildren(labels.labels.rightMouseMode);
+  if (dom.userConfigRightMouseModeSelect?.options[0]) dom.userConfigRightMouseModeSelect.options[0].text = labels.labels.rightMouseMoveScene;
+  if (dom.userConfigRightMouseModeSelect?.options[1]) dom.userConfigRightMouseModeSelect.options[1].text = labels.labels.rightMouseOrbitCamera;
+  document.querySelector('label[for="userConfigRotationSensitivityInput"]')?.replaceChildren(labels.labels.rotationSensitivity);
+  document.querySelector('label[for="userConfigPanSensitivityInput"]')?.replaceChildren(labels.labels.panSensitivity);
+  document.querySelector('label[for="userConfigDepthSensitivityInput"]')?.replaceChildren(labels.labels.depthSensitivity);
+  document.querySelector('label[for="userConfigZoomSensitivityInput"]')?.replaceChildren(labels.labels.zoomSensitivity);
+  document.querySelector('label[for="userConfigKeyboardLayoutSelect"]')?.replaceChildren(labels.labels.keyboardLayout);
+  document.querySelector('label[for="userConfigKeyboardInputModeSelect"]')?.replaceChildren(labels.labels.keyboardInputMode);
+  document.querySelector('label[for="userConfigSelectionColorInput"]')?.replaceChildren(labels.labels.selectionColor);
+  document.querySelector('label[for="userConfigCollisionColorInput"]')?.replaceChildren(labels.labels.collisionColor);
+  document.querySelector('label[for="userConfigUndoLimitInput"]')?.replaceChildren(labels.labels.undoLimit);
+  document.querySelector('label[for="userConfigAutosaveIntervalInput"]')?.replaceChildren(labels.labels.autosaveInterval);
+  document.querySelector('label[for="userConfigImportDirInput"]')?.replaceChildren(labels.labels.importDir);
+  document.querySelector('label[for="userConfigExportDirInput"]')?.replaceChildren(labels.labels.exportDir);
+  const invertLabel = document.querySelector('label[for="userConfigInvertYToggle"] span');
+  if (invertLabel) invertLabel.textContent = labels.labels.invertY;
+  const autosaveLabel = document.querySelector('label[for="userConfigAutosaveEnabledToggle"] span');
+  if (autosaveLabel) autosaveLabel.textContent = labels.labels.autosaveEnabled;
+  const staticLabels = dom.userConfigModal?.querySelectorAll('.user-config-static-label');
+  if (staticLabels?.length >= 4) {
+    staticLabels[0].textContent = labels.labels.storageMode;
+    staticLabels[1].textContent = labels.labels.activeShip;
+    staticLabels[2].textContent = labels.labels.lastSave;
+    staticLabels[3].textContent = labels.labels.storageInfo;
+  }
+}
+
+function applyEdgeColorSetting(color) {
+  edgeColorValidHex = Number.parseInt(String(color ?? '#000000').replace('#', ''), 16);
+  for (const instance of state.instances) {
+    instance.edgeMaterial?.color?.setHex?.(edgeColorValidHex);
+  }
+}
+
+function applySelectionColors(selectionColor, collisionColor) {
+  selectionHitboxColorHex = Number.parseInt(String(selectionColor ?? '#2f80ff').replace('#', ''), 16);
+  edgeColorInvalidHex = Number.parseInt(String(collisionColor ?? '#ff2d2d').replace('#', ''), 16);
+  selectionBox.material.color?.setHex?.(selectionHitboxColorHex);
+}
+
+function applyEditorSettings(editorSettings) {
+  historyStack.setLimit?.(editorSettings.undoLimit);
+  state.persistence?.updateSettings?.({
+    autoSaveEnabled: editorSettings.autoSaveEnabled,
+    autoSaveIntervalMs: editorSettings.autoSaveInterval * 1000,
+  });
+}
+
+function applyCameraSettings(cameraSettings) {
+  orbitControls.panSpeed = cameraSettings.panSensitivity;
+  orbitControls.zoomSpeed = cameraSettings.zoomSensitivity;
+  orbitControls.rotateSpeed = cameraSettings.rotationSensitivity * (cameraSettings.invertY ? -1 : 1);
+  orbitControls.mouseButtons.LEFT = null;
+  orbitControls.mouseButtons.RIGHT = cameraSettings.rightMouseMode === 'orbitCamera' ? THREE.MOUSE.ROTATE : null;
+}
+
+function applyUserSettings(settings) {
+  state.userSettings = settings;
+  applyThemeSetting(settings.interface.theme);
+  applyLanguageSetting(settings.interface.language);
+  applyEdgeColorSetting(settings.viewport.edgeColor);
+  applySelectionColors(settings.selection.selectionColor, settings.selection.collisionColor);
+  applyEditorSettings(settings.editor);
+  applyCameraSettings(settings.camera);
+}
+
+function fillUserConfigForm(settings) {
+  if (dom.userConfigThemeSelect) dom.userConfigThemeSelect.value = settings.interface.theme;
+  if (dom.userConfigLanguageSelect) dom.userConfigLanguageSelect.value = settings.interface.language;
+  if (dom.userConfigEdgeColorInput) dom.userConfigEdgeColorInput.value = settings.viewport.edgeColor;
+  if (dom.userConfigRightMouseModeSelect) dom.userConfigRightMouseModeSelect.value = settings.camera.rightMouseMode;
+  if (dom.userConfigRotationSensitivityInput) dom.userConfigRotationSensitivityInput.value = String(settings.camera.rotationSensitivity);
+  if (dom.userConfigPanSensitivityInput) dom.userConfigPanSensitivityInput.value = String(settings.camera.panSensitivity);
+  if (dom.userConfigDepthSensitivityInput) dom.userConfigDepthSensitivityInput.value = String(settings.camera.depthSensitivity);
+  if (dom.userConfigZoomSensitivityInput) dom.userConfigZoomSensitivityInput.value = String(settings.camera.zoomSensitivity);
+  if (dom.userConfigInvertYToggle) dom.userConfigInvertYToggle.checked = settings.camera.invertY;
+  if (dom.userConfigKeyboardLayoutSelect) dom.userConfigKeyboardLayoutSelect.value = settings.camera.keyboardLayout;
+  if (dom.userConfigKeyboardInputModeSelect) dom.userConfigKeyboardInputModeSelect.value = settings.camera.keyboardInputMode;
+  if (dom.userConfigSelectionColorInput) dom.userConfigSelectionColorInput.value = settings.selection.selectionColor;
+  if (dom.userConfigCollisionColorInput) dom.userConfigCollisionColorInput.value = settings.selection.collisionColor;
+  if (dom.userConfigUndoLimitInput) dom.userConfigUndoLimitInput.value = String(settings.editor.undoLimit);
+  if (dom.userConfigAutosaveEnabledToggle) dom.userConfigAutosaveEnabledToggle.checked = settings.editor.autoSaveEnabled;
+  if (dom.userConfigAutosaveIntervalInput) dom.userConfigAutosaveIntervalInput.value = String(settings.editor.autoSaveInterval);
+  if (dom.userConfigImportDirInput) dom.userConfigImportDirInput.value = settings.paths.defaultImportDir;
+  if (dom.userConfigExportDirInput) dom.userConfigExportDirInput.value = settings.paths.defaultExportDir;
+}
+
+function readUserConfigForm() {
+  return {
+    interface: {
+      theme: dom.userConfigThemeSelect?.value,
+      language: dom.userConfigLanguageSelect?.value,
+    },
+    viewport: {
+      edgeColor: dom.userConfigEdgeColorInput?.value,
+    },
+    camera: {
+      rightMouseMode: dom.userConfigRightMouseModeSelect?.value,
+      rotationSensitivity: dom.userConfigRotationSensitivityInput?.value,
+      panSensitivity: dom.userConfigPanSensitivityInput?.value,
+      depthSensitivity: dom.userConfigDepthSensitivityInput?.value,
+      zoomSensitivity: dom.userConfigZoomSensitivityInput?.value,
+      invertY: dom.userConfigInvertYToggle?.checked,
+      keyboardLayout: dom.userConfigKeyboardLayoutSelect?.value,
+      keyboardInputMode: dom.userConfigKeyboardInputModeSelect?.value,
+      bindings: state.userSettings.camera.bindings,
+    },
+    selection: {
+      selectionColor: dom.userConfigSelectionColorInput?.value,
+      collisionColor: dom.userConfigCollisionColorInput?.value,
+    },
+    editor: {
+      undoLimit: dom.userConfigUndoLimitInput?.value,
+      autoSaveEnabled: dom.userConfigAutosaveEnabledToggle?.checked,
+      autoSaveInterval: dom.userConfigAutosaveIntervalInput?.value,
+    },
+    paths: {
+      defaultImportDir: dom.userConfigImportDirInput?.value,
+      defaultExportDir: dom.userConfigExportDirInput?.value,
+    },
+  };
+}
+
 function renderShipPersistenceState(persistenceState) {
   if (!dom.shipStorageStatus || !dom.shipList || !dom.shipNameInput) return;
 
@@ -3516,6 +3830,35 @@ function renderShipPersistenceState(persistenceState) {
     `erreur            : ${persistenceState.lastSaveError || 'aucune'}`,
     `info stockage     : ${persistenceState.lastWarning || 'aucune'}`,
   ].join('\n');
+
+  if (dom.userConfigStorageMode) {
+    dom.userConfigStorageMode.textContent = persistenceState.storageMode || 'n/a';
+  }
+  if (dom.userConfigActiveShip) {
+    dom.userConfigActiveShip.textContent = persistenceState.currentShipName || 'n/a';
+  }
+  if (dom.userConfigLastSave) {
+    dom.userConfigLastSave.textContent = formatDateTime(persistenceState.lastSavedAt);
+  }
+  if (dom.userConfigStorageInfo) {
+    const info = persistenceState.lastWarning || persistenceState.lastSaveError || 'aucune';
+    dom.userConfigStorageInfo.textContent = info;
+  }
+}
+
+function setUserConfigModalOpen(open) {
+  if (!dom.userConfigModal) return;
+  if (open) {
+    state.userConfigDraft = structuredClone(state.userSettings);
+    fillUserConfigForm(state.userConfigDraft);
+  }
+  dom.userConfigModal.classList.toggle('open', open);
+  dom.userConfigModal.setAttribute('aria-hidden', String(!open));
+  if (open) {
+    dom.userConfigThemeSelect?.focus();
+  } else {
+    state.userConfigDraft = null;
+  }
 }
 
 function setPanelCollapsed(panel, body, button, icon, collapsed) {
@@ -3560,6 +3903,7 @@ function downloadJson(filename, payload) {
 }
 
 async function init() {
+  applyUserSettings(state.userSettings);
   state.catalog = await loadAssemblyCatalog();
   const catalogValidation = validateCatalogData(state.catalog);
   if (!catalogValidation.valid) {
@@ -3588,6 +3932,10 @@ async function init() {
     loadShipCreation: loadShipCreationIntoScene,
     onStateChange: renderShipPersistenceState,
     downloadJson,
+    initialSettings: {
+      autoSaveEnabled: state.userSettings.editor.autoSaveEnabled,
+      autoSaveIntervalMs: state.userSettings.editor.autoSaveInterval * 1000,
+    },
   });
 
   renderCatalogPieceOptions();
@@ -3608,6 +3956,22 @@ async function init() {
 function bindEvents() {
   mountSymmetryButtonIcons();
   dom.catalogPieceSelect?.addEventListener('change', () => setSelectedCatalogPiece(dom.catalogPieceSelect.value));
+  dom.openUserConfigBtn?.addEventListener('click', () => setUserConfigModalOpen(true));
+  dom.closeUserConfigBtn?.addEventListener('click', () => setUserConfigModalOpen(false));
+  dom.cancelUserConfigBtn?.addEventListener('click', () => setUserConfigModalOpen(false));
+  dom.resetUserConfigBtn?.addEventListener('click', () => {
+    state.userConfigDraft = getDefaultUserSettings();
+    fillUserConfigForm(state.userConfigDraft);
+  });
+  dom.saveUserConfigBtn?.addEventListener('click', () => {
+    const nextSettings = saveUserSettings(readUserConfigForm());
+    applyUserSettings(nextSettings);
+    fillUserConfigForm(nextSettings);
+    setUserConfigModalOpen(false);
+  });
+  dom.userConfigModal?.addEventListener('click', (event) => {
+    if (event.target === dom.userConfigModal) setUserConfigModalOpen(false);
+  });
 
   dom.instanceSelect.addEventListener('change', () => {
     const selectedOptions = [...dom.instanceSelect.selectedOptions];
@@ -3731,11 +4095,14 @@ function bindEvents() {
     updateObjectDrag: updateSelectionDrag,
     endObjectDrag: endSelectionDrag,
     beginCameraDrag: beginCameraPointerDrag,
+    updateCameraDrag: updateCameraPointerDrag,
     endCameraDrag: endCameraPointerDrag,
     collectMarqueeSelection,
     moveSelectedByDelta,
     moveSceneByDelta: panSceneByDelta,
     getMoveStep: getMagnetStep,
+    getKeyboardConfig: () => state.userSettings.camera,
+    getCameraOrbitTarget,
   });
   renderer.domElement.addEventListener('pointerdown', (event) => {
     if (assemblyInteractionController.onPointerDown(event)) {
@@ -3764,6 +4131,11 @@ function bindEvents() {
   renderer.domElement.addEventListener('drop', onCanvasDrop);
 
   window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && dom.userConfigModal?.classList.contains('open')) {
+      setUserConfigModalOpen(false);
+      event.preventDefault();
+      return;
+    }
     const tagName = document.activeElement?.tagName?.toLowerCase();
     if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') return;
     const key = event.key.toLowerCase();

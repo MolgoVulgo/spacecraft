@@ -1,5 +1,5 @@
 export function createCommandStack(options = {}) {
-  const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 10;
+  let limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 10;
   const undoStack = [];
   const redoStack = [];
 
@@ -19,6 +19,14 @@ export function createCommandStack(options = {}) {
     if (!command?.do) return false;
     command.do();
     return push(command);
+  }
+
+  function setLimit(nextLimit) {
+    if (!Number.isInteger(nextLimit) || nextLimit <= 0) return limit;
+    limit = nextLimit;
+    trimUndoStack();
+    while (redoStack.length > limit) redoStack.shift();
+    return limit;
   }
 
   function undo() {
@@ -41,6 +49,7 @@ export function createCommandStack(options = {}) {
   return {
     limit,
     execute,
+    setLimit,
     push,
     undo,
     redo,

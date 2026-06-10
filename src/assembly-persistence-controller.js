@@ -13,7 +13,7 @@ import { getLocalDbConfig } from './storage/localDb.js';
 import { createMemoryShipRepository, createShipRepository } from './storage/shipRepository.js';
 import { detectStorageAvailability } from './storage/storageAvailability.js';
 
-const AUTOSAVE_DELAY_MS = 700;
+const DEFAULT_AUTOSAVE_DELAY_MS = 700;
 
 function noop() {}
 
@@ -35,6 +35,7 @@ export function createAssemblyPersistenceController(options) {
     onStateChange = noop,
     downloadJson = noop,
     confirm = (message) => globalThis.confirm(message),
+    initialSettings = {},
   } = options;
 
   const persistentRepository = createShipRepository();
@@ -53,6 +54,10 @@ export function createAssemblyPersistenceController(options) {
     lastSaveError: '',
     lastWarning: '',
     ships: [],
+    autoSaveEnabled: initialSettings.autoSaveEnabled !== false,
+    autoSaveIntervalMs: Number.isFinite(initialSettings.autoSaveIntervalMs) && initialSettings.autoSaveIntervalMs > 0
+      ? initialSettings.autoSaveIntervalMs
+      : DEFAULT_AUTOSAVE_DELAY_MS,
   };
 
   let activeRepository = memoryRepository;
@@ -148,13 +153,18 @@ export function createAssemblyPersistenceController(options) {
   }
 
   function scheduleAutosave() {
+    if (!state.autoSaveEnabled) {
+      clearAutosaveTimer();
+      emit();
+      return;
+    }
     clearAutosaveTimer();
     autosaveTimer = setTimeout(() => {
       flushAutosave().catch((error) => {
         state.lastSaveError = error?.message ?? 'Autosave impossible.';
         emit();
       });
-    }, AUTOSAVE_DELAY_MS);
+    }, state.autoSaveIntervalMs);
     emit();
   }
 
@@ -251,6 +261,16 @@ export function createAssemblyPersistenceController(options) {
 
     async saveNow() {
       await flushAutosave();
+    },
+
+    updateSettings(settings = {}) {
+      if (typeof settings.autoSaveEnabled === 'boolean') state.autoSaveEnabled = settings.autoSaveEnabled;
+      if (Number.isFinite(settings.autoSaveIntervalMs) && settings.autoSaveIntervalMs > 0) {
+        state.autoSaveIntervalMs = settings.autoSaveIntervalMs;
+      }
+      if (!state.autoSaveEnabled) clearAutosaveTimer();
+      else if (state.isDirty) scheduleAutosave();
+      emit();
     },
 
     async exportCurrentShip() {
