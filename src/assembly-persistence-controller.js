@@ -7,6 +7,7 @@ import {
   getCatalogVersion,
   prepareImportedShipCreation,
   sanitizeShipName,
+  validateShipCreation,
 } from './ship-creation.js';
 import { getLocalDbConfig } from './storage/localDb.js';
 import { createMemoryShipRepository, createShipRepository } from './storage/shipRepository.js';
@@ -81,6 +82,14 @@ export function createAssemblyPersistenceController(options) {
 
   async function openShipCreation(shipCreation, options = {}) {
     const { suppressWarning = false } = options;
+    const validation = validateShipCreation(shipCreation, {
+      currentCatalogVersion: state.currentCatalogVersion,
+      catalogVersion: state.currentCatalogVersion,
+      catalogPieceIds: (catalog?.catalog_pieces ?? []).map((piece) => piece.id),
+    });
+    if (!validation.valid) {
+      throw new Error(validation.errors.join(' '));
+    }
     clearAutosaveTimer();
     state.currentShipId = shipCreation.local_id;
     state.currentShipName = sanitizeShipName(shipCreation.name);
@@ -88,7 +97,7 @@ export function createAssemblyPersistenceController(options) {
     state.lastSavedAt = shipCreation.updated_at;
     state.isDirty = false;
     state.lastSaveError = '';
-    if (!suppressWarning) state.lastWarning = '';
+    if (!suppressWarning) state.lastWarning = validation.warnings.join(' ');
     await loadShipCreation(cloneShipCreation(shipCreation));
     await activeRepository.setLastOpenedShipId(shipCreation.local_id);
     await refreshShips();

@@ -8,11 +8,14 @@
     "build": "node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview --host 0.0.0.0",
     "build:assembly": "node node_modules/vite/bin/vite.js build && node scripts/prune-editor-build.mjs",
-    "preview:assembly": "npm run build:assembly && node node_modules/vite/bin/vite.js preview --host 0.0.0.0"
+    "preview:assembly": "npm run build:assembly && node node_modules/vite/bin/vite.js preview --host 0.0.0.0",
+    "test": "node --test tests/*.test.js",
+    "test:watch": "node --test --watch tests/*.test.js",
+    "test:python:legacy": "pytest legacy_tests/python -q"
   },
   "dependencies": {
-    "vite": "latest",
-    "three": "latest"
+    "vite": "8.0.16",
+    "three": "0.184.0"
   },
   "devDependencies": {},
   "description": "SpaceCraft C1 local web editor with rich catalog schema"

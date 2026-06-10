@@ -32,8 +32,16 @@ En build statique, l’écriture directe est impossible depuis le navigateur. Le
 ```bash
 npm install
 npm run dev
+npm run test
 npm run build
 npm run build:assembly
+node scripts/validate-catalog.mjs public/data/4x3x1_catalog.json
+```
+
+Tests Python historiques uniquement :
+
+```bash
+npm run test:python:legacy
 ```
 
 ## Flux de travail
@@ -104,3 +112,22 @@ Le moteur ne fusionne pas la géométrie : un groupe reste un conteneur logique 
 La création est refusée si les pièces sélectionnées ne forment pas un ensemble connecté par ancres compatibles.
 
 La persistance catalogue navigateur reste interdite. Seules les créations de vaisseaux utilisent IndexedDB.
+
+## Garde-fous techniques
+
+Assembly utilise maintenant des modules dédiés pour les zones sensibles :
+
+```txt
+src/assembly-drag-controller.js  -> capture pointeur / drag caméra / routage interaction
+src/assembly-movement.js         -> déplacements validés pièce/groupe/sélection
+src/history/command-stack.js     -> undo / redo des déplacements
+src/catalog-validator.js         -> validation contrat catalogue
+src/scene-validator.js           -> validation contrat scène / groupes
+```
+
+Docs de référence :
+
+```txt
+docs/CURRENT_ARCHITECTURE.md
+docs/DRIFT_CONTROL.md
+```
