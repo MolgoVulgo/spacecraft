@@ -173,11 +173,9 @@ body[data-user-theme="light"] button.active {
   justify-content: center;
 }
 
-.icon-button img {
-  width: 16px;
-  height: 16px;
-  display: block;
-  object-fit: contain;
+.icon-button .ri-settings-line {
+  font-size: 16px;
+  line-height: 1;
 }
 
 button:disabled,
@@ -1306,6 +1304,13 @@ canvas.catalog-drop-target {
   margin-left: auto;
   text-align: right;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.panel-toggle-icon i {
+  font-size: 16px;
+  line-height: 1;
 }
 
 .panel-toggle:hover,

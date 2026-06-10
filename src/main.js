@@ -1,4 +1,5 @@
 import './style.css';
+import 'remixicon/fonts/remixicon.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { ASSEMBLY_MAGNET_ENABLED, ASSEMBLY_MAGNET_STEP_UNITS } from './assembly-config.js';
@@ -3866,7 +3867,11 @@ function setPanelCollapsed(panel, body, button, icon, collapsed) {
   panel.classList.toggle('is-collapsed', collapsed);
   body.hidden = collapsed;
   button.setAttribute('aria-expanded', String(!collapsed));
-  if (icon) icon.textContent = collapsed ? '[+]' : '[-]';
+  if (icon) {
+    icon.innerHTML = collapsed
+      ? '<i class="ri-expand-vertical-fill" aria-hidden="true"></i>'
+      : '<i class="ri-collapse-vertical-fill" aria-hidden="true"></i>';
+  }
 }
 
 function setCreationsPanelCollapsed(collapsed) {

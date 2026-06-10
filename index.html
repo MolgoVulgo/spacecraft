@@ -17,14 +17,14 @@
             aria-label="Ouvrir la configuration utilisateur"
             title="Configuration utilisateur"
           >
-            <img src="/public/ui/gear.png" alt="" />
+            <i class="ri-settings-line" aria-hidden="true"></i>
           </button>
         </header>
 
         <section id="creationsPanel" class="control-block creations-panel">
           <button id="toggleCreationsPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="creationsPanelBody">
             <span class="panel-toggle-title">Mes créations</span>
-            <span id="toggleCreationsPanelIcon" class="panel-toggle-icon">[-]</span>
+            <span id="toggleCreationsPanelIcon" class="panel-toggle-icon"><i class="ri-collapse-vertical-fill" aria-hidden="true"></i></span>
           </button>
           <div id="creationsPanelBody" class="creations-panel-body">
             <input id="shipNameInput" type="text" value="Unnamed" placeholder="Nom de la création" />
@@ -48,7 +48,7 @@
         <section id="placedPanel" class="control-block placed-panel">
           <button id="togglePlacedPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="placedPanelBody">
             <span class="panel-toggle-title">Pièces placées</span>
-            <span id="togglePlacedPanelIcon" class="panel-toggle-icon">[-]</span>
+            <span id="togglePlacedPanelIcon" class="panel-toggle-icon"><i class="ri-collapse-vertical-fill" aria-hidden="true"></i></span>
           </button>
           <div id="placedPanelBody" class="placed-panel-body">
             <select id="instanceSelect" size="10" multiple></select>
@@ -58,7 +58,7 @@
         <section id="catalogPanel" class="control-block catalog-only-block assembly-catalog-controls">
           <button id="toggleCatalogPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="catalogPanelBody">
             <span class="panel-toggle-title">Famille / matériau</span>
-            <span id="toggleCatalogPanelIcon" class="panel-toggle-icon">[-]</span>
+            <span id="toggleCatalogPanelIcon" class="panel-toggle-icon"><i class="ri-collapse-vertical-fill" aria-hidden="true"></i></span>
           </button>
           <div id="catalogPanelBody" class="catalog-panel-body">
             <label for="catalogFamilyFilter">Famille / matériau</label>
@@ -98,7 +98,7 @@
           <section id="helpPanel" class="help-overlay">
             <button id="toggleHelpPanelBtn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="helpPanelBody">
               <span class="panel-toggle-title">Aide</span>
-              <span id="toggleHelpPanelIcon" class="panel-toggle-icon">[+]</span>
+              <span id="toggleHelpPanelIcon" class="panel-toggle-icon"><i class="ri-expand-vertical-fill" aria-hidden="true"></i></span>
             </button>
             <div id="helpPanelBody" class="help-overlay-body" hidden>
               <ul class="help-list">
