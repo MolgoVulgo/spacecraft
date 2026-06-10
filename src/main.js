@@ -46,11 +46,14 @@ const state = {
   catalogSource: 'fichier public/data',
   repo: null,
   instances: [],
+  assemblyGroups: [],
+  selectedEntityType: null,
   selectedId: null,
   selectedGroupIds: [],
   copiedSelection: null,
   selectedCatalogPieceId: null,
   nextInstanceId: 1,
+  nextGroupId: 1,
   drag: null,
   lastMessage: '',
   catalogFilters: { familyId: null, sizeId: null, profileType: null },
@@ -73,6 +76,9 @@ const dom = {
   instanceSelect: document.querySelector('#instanceSelect'),
   duplicatePieceBtn: document.querySelector('#duplicatePieceBtn'),
   removePieceBtn: document.querySelector('#removePieceBtn'),
+  createGroupBtn: document.querySelector('#createGroupBtn'),
+  ungroupBtn: document.querySelector('#ungroupBtn'),
+  renameGroupBtn: document.querySelector('#renameGroupBtn'),
   clearSceneBtn: document.querySelector('#clearSceneBtn'),
   deselectBtn: document.querySelector('#deselectBtn'),
   colorInput: document.querySelector('#colorInput'),
@@ -177,6 +183,11 @@ const dragPlane = new THREE.Plane();
 const dragHit = new THREE.Vector3();
 const selectionBox = new THREE.Box3Helper(new THREE.Box3(), SELECTION_HITBOX_COLOR);
 selectionBox.visible = false;
+selectionBox.renderOrder = 1000;
+selectionBox.material.depthTest = true;
+selectionBox.material.depthWrite = false;
+selectionBox.material.transparent = true;
+selectionBox.material.opacity = 1;
 scene.add(selectionBox);
 
 function createAssemblyGrid(size = 4000, step = 50) {
@@ -280,7 +291,36 @@ function getRecipe(id) {
 }
 
 function getSelectedInstance() {
+  if (state.selectedEntityType !== 'piece') return null;
   return state.instances.find((item) => item.id === state.selectedId) ?? null;
+}
+
+function getAssemblyGroupById(groupId) {
+  return state.assemblyGroups.find((item) => item.id === groupId) ?? null;
+}
+
+function getSelectedAssemblyGroup() {
+  if (state.selectedEntityType !== 'group') return null;
+  return getAssemblyGroupById(state.selectedId);
+}
+
+function getInstanceById(instanceId) {
+  return state.instances.find((item) => item.id === instanceId) ?? null;
+}
+
+function isInstanceGrouped(instance) {
+  return Boolean(instance?.groupId);
+}
+
+function getLooseInstances() {
+  return state.instances.filter((instance) => !instance.groupId);
+}
+
+function getVisibleAssemblyEntries() {
+  return [
+    ...state.assemblyGroups.map((group) => ({ type: 'group', id: group.id, label: group.name })),
+    ...getLooseInstances().map((instance) => ({ type: 'piece', id: instance.id, label: instance.label })),
+  ];
 }
 
 function cloneSymmetry(source = {}) {
@@ -289,6 +329,29 @@ function cloneSymmetry(source = {}) {
     width: Boolean(source.width),
     height: Boolean(source.height),
   };
+}
+
+function cloneVector3Like(source = {}) {
+  return new THREE.Vector3(
+    Number(source.x) || 0,
+    Number(source.y) || 0,
+    Number(source.z) || 0,
+  );
+}
+
+function vectorToPlain(position) {
+  return {
+    x: round3(position.x),
+    y: round3(position.y),
+    z: round3(position.z),
+  };
+}
+
+function createNextGroupId(options = {}) {
+  const id = String(options.id ?? `group_${String(state.nextGroupId++).padStart(3, '0')}`);
+  const forcedIndex = Number.parseInt(id.replace(/^group_/, ''), 10);
+  if (Number.isFinite(forcedIndex)) state.nextGroupId = Math.max(state.nextGroupId, forcedIndex + 1);
+  return id;
 }
 
 function getSymmetryLabel(symmetry) {
@@ -522,6 +585,7 @@ function createInstance(catalogPiece, options = {}) {
     id,
     label: options.label ?? `${catalogPiece.label_fr || catalogPiece.id} #${id.replace('placed_', '')}`,
     catalogPieceId: catalogPiece.id,
+    groupId: options.groupId ?? null,
     symmetry,
     rotation: { axis: 'height', quarter_turns: 0, ...(options.rotation ?? {}) },
     group,
@@ -623,6 +687,11 @@ function addSelectedCatalogPiece(position = null) {
 }
 
 function duplicateSelectedInstance() {
+  if (state.selectedEntityType === 'group') {
+    duplicateSelectedAssemblyGroup();
+    return;
+  }
+
   const selected = getSelectedInstance();
   if (!selected) return;
   const catalogPiece = getCatalogPieceById(selected.catalogPieceId);
@@ -654,6 +723,7 @@ function duplicateSelectedInstance() {
   });
 
   if (clone) {
+    selectPiece(clone.id);
     fitCameraToObject(clone.group, false);
     markShipDirty();
   }
@@ -665,11 +735,16 @@ function disposeInstance(instance) {
 }
 
 function removeSelectedInstance() {
-  const selected = getSelectedInstance();
-  if (!selected) return;
-  disposeInstance(selected);
-  state.instances = state.instances.filter((item) => item.id !== selected.id);
-  state.selectedId = null;
+  if (state.selectedEntityType === 'group') {
+    removeSelectedAssemblyGroup();
+    return;
+  }
+
+  const selectedInstances = getSelectedInstancesForCommands();
+  if (!selectedInstances.length) return;
+  for (const instance of selectedInstances) disposeInstance(instance);
+  state.instances = state.instances.filter((item) => !selectedInstances.some((selected) => selected.id === item.id));
+  clearSelection();
   refreshInstanceList();
   updateSelectionUi();
   updateStats();
@@ -682,7 +757,10 @@ function removeSelectedInstance() {
 function clearScene(options = {}) {
   for (const instance of state.instances) disposeInstance(instance);
   state.instances = [];
-  state.selectedId = null;
+  state.assemblyGroups = [];
+  state.nextInstanceId = 1;
+  state.nextGroupId = 1;
+  clearSelection();
   refreshInstanceList();
   updateSelectionUi();
   updateStats();
@@ -693,10 +771,20 @@ function clearScene(options = {}) {
   if (!options.skipPersist) markShipDirty();
 }
 
-function selectInstance(id) {
-  const instance = state.instances.find((item) => item.id === id);
-  state.selectedId = instance ? id : null;
-  syncAssemblyPaletteToSelectedInstance();
+function clearSelection() {
+  state.selectedEntityType = null;
+  state.selectedId = null;
+  state.selectedGroupIds = [];
+}
+
+function selectPiece(id) {
+  const instance = getInstanceById(id);
+  clearSelection();
+  if (instance) {
+    state.selectedEntityType = 'piece';
+    state.selectedId = id;
+    syncAssemblyPaletteToSelectedInstance();
+  }
   refreshInstanceList();
   updateSelectionUi();
   renderCatalogPieceOptions();
@@ -705,36 +793,285 @@ function selectInstance(id) {
   updateSelectionBox();
 }
 
+function selectAssemblyGroup(groupId) {
+  const group = getAssemblyGroupById(groupId);
+  clearSelection();
+  if (group) {
+    state.selectedEntityType = 'group';
+    state.selectedId = groupId;
+  }
+  refreshInstanceList();
+  updateSelectionUi();
+  renderCatalogPieceOptions();
+  renderCatalogEditors();
+  updateStats();
+  updateSelectionBox();
+}
+
+function selectPieceMulti(ids = []) {
+  clearSelection();
+  state.selectedGroupIds = ids.filter((id) => {
+    const instance = getInstanceById(id);
+    return instance && !instance.groupId;
+  });
+  refreshInstanceList();
+  updateSelectionUi();
+  renderCatalogPieceOptions();
+  renderCatalogEditors();
+  updateStats();
+  updateSelectionBox();
+}
+
+function togglePieceInMultiSelection(instanceId) {
+  const instance = getInstanceById(instanceId);
+  if (!instance || instance.groupId) return;
+  const baseIds = state.selectedGroupIds.length
+    ? [...state.selectedGroupIds]
+    : (state.selectedEntityType === 'piece' && state.selectedId && !getInstanceById(state.selectedId)?.groupId
+      ? [state.selectedId]
+      : []);
+  const nextIds = baseIds.includes(instanceId)
+    ? baseIds.filter((id) => id !== instanceId)
+    : [...baseIds, instanceId];
+  selectPieceMulti(nextIds);
+}
+
+function getConnectedInstanceIds(instances) {
+  if (!instances.length) return new Set();
+  const selectedIds = new Set(instances.map((instance) => instance.id));
+  const adjacency = new Map(instances.map((instance) => [instance.id, new Set()]));
+  for (let i = 0; i < instances.length; i += 1) {
+    for (let j = i + 1; j < instances.length; j += 1) {
+      const a = instances[i];
+      const b = instances[j];
+      if (!instancesHaveCompatibleAnchors(a, b)) continue;
+      adjacency.get(a.id)?.add(b.id);
+      adjacency.get(b.id)?.add(a.id);
+    }
+  }
+
+  const connected = new Set();
+  const queue = [instances[0].id];
+  while (queue.length) {
+    const current = queue.shift();
+    if (connected.has(current) || !selectedIds.has(current)) continue;
+    connected.add(current);
+    for (const next of adjacency.get(current) ?? []) {
+      if (!connected.has(next)) queue.push(next);
+    }
+  }
+  return connected;
+}
+
+function validateAssemblyGroupConnectivity(instances) {
+  if (instances.length < 2) return { valid: false, message: 'Groupe refusé : sélectionne au moins 2 pièces libres.' };
+  const connectedIds = getConnectedInstanceIds(instances);
+  if (connectedIds.size === instances.length) return { valid: true, message: '' };
+  return {
+    valid: false,
+    message: 'Groupe refusé : toutes les pièces du groupe doivent être reliées entre elles par des ancres compatibles.',
+  };
+}
+
+function selectInstance(id) {
+  selectPiece(id);
+}
+
+function createAssemblyGroupFromSelection() {
+  const selectedIds = [...new Set(state.selectedGroupIds.filter(Boolean))];
+  if (selectedIds.length < 2) {
+    setMessage('Groupe refusé : sélectionne au moins 2 pièces libres.');
+    return null;
+  }
+  const instances = selectedIds.map(getInstanceById).filter(Boolean);
+  if (instances.length !== selectedIds.length || instances.some((instance) => instance.groupId)) {
+    setMessage('Groupe refusé : la sélection contient une pièce déjà groupée.');
+    return null;
+  }
+  const connectivity = validateAssemblyGroupConnectivity(instances);
+  if (!connectivity.valid) {
+    setMessage(connectivity.message);
+    return null;
+  }
+
+  const bbox = computeBoundingBoxFromBoxes(instances.map((instance) => getInstanceBox(instance)));
+  const origin = bbox.min.clone();
+  const group = {
+    id: createNextGroupId(),
+    type: 'group',
+    name: `Groupe ${String(state.nextGroupId - 1).padStart(3, '0')}`,
+    origin,
+    pivot: computeBoundingCenter(bbox),
+    bbox,
+    children: instances.map((instance) => ({
+      instanceId: instance.id,
+      localPosition: instance.group.position.clone().sub(origin),
+    })),
+    metadata: {
+      createdFromSelection: true,
+      canUngroup: true,
+      savedAsModel: false,
+    },
+  };
+
+  for (const instance of instances) instance.groupId = group.id;
+  state.assemblyGroups.push(group);
+  refreshAssemblyGroupRuntime(group);
+  syncGroupInstanceWorldPositions(group);
+  selectAssemblyGroup(group.id);
+  updateAttachmentStates();
+  markShipDirty();
+  return group;
+}
+
+function ungroupAssemblyGroup(group, options = {}) {
+  if (!group) return false;
+  for (const childRef of group.children) {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) continue;
+    instance.groupId = null;
+    instance.group.position.copy(group.origin.clone().add(childRef.localPosition));
+  }
+  state.assemblyGroups = state.assemblyGroups.filter((item) => item.id !== group.id);
+  if (!options.skipSelection) selectPieceMulti(group.children.map((child) => child.instanceId));
+  return true;
+}
+
+function ungroupSelectedAssemblyGroup() {
+  const group = getSelectedAssemblyGroup();
+  if (!group) return;
+  if (!ungroupAssemblyGroup(group)) return;
+  refreshInstanceList();
+  updateSelectionUi();
+  updateStats();
+  updateSelectionBox();
+  updateAttachmentStates();
+  markShipDirty();
+}
+
+function removeSelectedAssemblyGroup() {
+  const group = getSelectedAssemblyGroup();
+  if (!group) return;
+  const childIds = new Set(group.children.map((child) => child.instanceId));
+  for (const instance of state.instances.filter((item) => childIds.has(item.id))) disposeInstance(instance);
+  state.instances = state.instances.filter((item) => !childIds.has(item.id));
+  state.assemblyGroups = state.assemblyGroups.filter((item) => item.id !== group.id);
+  clearSelection();
+  refreshInstanceList();
+  updateSelectionUi();
+  updateStats();
+  updateEmptyHint();
+  updateAttachmentStates();
+  updateSelectionBox();
+  markShipDirty();
+}
+
+function renameSelectedAssemblyGroup() {
+  const group = getSelectedAssemblyGroup();
+  if (!group) return;
+  const value = window.prompt('Nom du groupe', group.name);
+  if (value === null) return;
+  const nextName = value.trim();
+  if (!nextName) {
+    setMessage('Renommage refusé : nom vide.');
+    return;
+  }
+  group.name = nextName;
+  refreshInstanceList();
+  updateStats();
+  markShipDirty();
+}
+
+function duplicateSelectedAssemblyGroup() {
+  const source = getSelectedAssemblyGroup();
+  if (!source) return;
+  const offset = new THREE.Vector3(getMagnetStep(), 0, 0);
+  const clones = [];
+  for (const childRef of source.children) {
+    const sourceInstance = getInstanceById(childRef.instanceId);
+    const catalogPiece = getCatalogPieceById(sourceInstance?.catalogPieceId);
+    if (!sourceInstance || !catalogPiece) continue;
+    const clone = createInstance(catalogPiece, {
+      symmetry: sourceInstance.symmetry,
+      color: `#${sourceInstance.material.color.getHexString()}`,
+      position: source.origin.clone().add(offset).add(childRef.localPosition),
+      preservePosition: true,
+    });
+    if (!clone) {
+      for (const created of clones) {
+        disposeInstance(created);
+        state.instances = state.instances.filter((item) => item.id !== created.id);
+      }
+      setMessage('Duplication refusée : aucun espace libre pour le groupe.');
+      return;
+    }
+    clones.push(clone);
+  }
+
+  selectPieceMulti(clones.map((instance) => instance.id));
+  const group = createAssemblyGroupFromSelection();
+  if (!group) return;
+  group.name = `${source.name} copie`;
+  refreshInstanceList();
+  updateStats();
+  updateSelectionBox();
+  markShipDirty();
+}
+
 function refreshInstanceList() {
   dom.instanceSelect.innerHTML = '';
-  for (const instance of state.instances) {
+  for (const entry of getVisibleAssemblyEntries()) {
     const option = document.createElement('option');
-    option.value = instance.id;
-    option.textContent = `${instance.label} · sym: ${getSymmetryLabel(instance.symmetry)}`;
-    option.selected = instance.id === state.selectedId;
+    option.value = entry.id;
+    option.dataset.entryType = entry.type;
+    if (entry.type === 'group') {
+      const group = getAssemblyGroupById(entry.id);
+      option.textContent = `${group?.name ?? entry.label} · groupe · ${group?.children.length ?? 0} pièce(s)`;
+      option.selected = state.selectedEntityType === 'group' && state.selectedId === entry.id;
+    } else {
+      const instance = getInstanceById(entry.id);
+      option.textContent = `${entry.label} · sym: ${getSymmetryLabel(instance?.symmetry ?? {})}`;
+      option.selected = state.selectedEntityType === 'piece'
+        ? state.selectedId === entry.id
+        : state.selectedGroupIds.includes(entry.id);
+    }
     dom.instanceSelect.append(option);
   }
 }
 
 function updateSelectionUi() {
   const selected = getSelectedInstance();
-  const hasSelected = Boolean(selected);
+  const selectedAssemblyGroup = getSelectedAssemblyGroup();
+  const hasSelected = Boolean(selected || selectedAssemblyGroup);
+  const hasAnySelection = hasSelected || state.selectedGroupIds.length > 0;
   for (const element of selectedControls) element.disabled = !hasSelected;
   if (dom.duplicatePieceBtn) dom.duplicatePieceBtn.disabled = !hasSelected;
-  if (dom.removePieceBtn) dom.removePieceBtn.disabled = !hasSelected;
-  if (dom.deselectBtn) dom.deselectBtn.disabled = !hasSelected;
-  if (dom.fitSelectedBtn) dom.fitSelectedBtn.disabled = !hasSelected;
+  if (dom.removePieceBtn) dom.removePieceBtn.disabled = !hasAnySelection;
+  if (dom.deselectBtn) dom.deselectBtn.disabled = !hasAnySelection;
+  if (dom.fitSelectedBtn) dom.fitSelectedBtn.disabled = !hasAnySelection;
+  if (dom.createGroupBtn) dom.createGroupBtn.disabled = state.selectedGroupIds.length < 2;
+  if (dom.ungroupBtn) dom.ungroupBtn.disabled = !selectedAssemblyGroup;
+  if (dom.renameGroupBtn) dom.renameGroupBtn.disabled = !selectedAssemblyGroup;
+  if (dom.fitAllBtn) dom.fitAllBtn.disabled = state.instances.length === 0;
 
-  if (!selected) {
+  if (!hasSelected) {
     dom.colorInput.value = DEFAULT_COLOR;
     dom.heightInput.value = '0';
     setSymmetryButtonState({ length: false, width: false, height: false });
     return;
   }
 
-  dom.colorInput.value = `#${selected.material.color.getHexString()}`;
-  dom.heightInput.value = String(Math.round(selected.group.position.z));
-  setSymmetryButtonState(selected.symmetry);
+  if (selected) {
+    dom.colorInput.value = `#${selected.material.color.getHexString()}`;
+    dom.heightInput.value = String(Math.round(selected.group.position.z));
+    setSymmetryButtonState(selected.symmetry);
+    return;
+  }
+
+  const firstChild = getInstanceById(selectedAssemblyGroup.children[0]?.instanceId);
+  dom.colorInput.value = firstChild ? `#${firstChild.material.color.getHexString()}` : DEFAULT_COLOR;
+  dom.heightInput.value = String(Math.round(selectedAssemblyGroup.origin.z));
+  setSymmetryButtonState({ length: false, width: false, height: false });
 }
 
 function setSymmetryButtonState(symmetry) {
@@ -763,6 +1100,12 @@ function mountSymmetryButtonIcons() {
 }
 
 function toggleSelectedSymmetry(axis) {
+  const selectedGroup = getSelectedAssemblyGroup();
+  if (selectedGroup) {
+    applyAssemblyGroupSymmetry(selectedGroup, axis);
+    return;
+  }
+
   const selected = getSelectedInstance();
   if (!selected) return;
 
@@ -779,18 +1122,68 @@ function toggleSelectedSymmetry(axis) {
 }
 
 function resetSelectedSymmetries() {
+  const selectedGroup = getSelectedAssemblyGroup();
+  if (selectedGroup) return;
   const selected = getSelectedInstance();
   if (!selected) return;
   applySymmetryState(selected, { length: false, width: false, height: false });
 }
 
-function applySymmetryState(instance, nextSymmetry) {
+function applyAssemblyGroupSymmetry(group, axis) {
+  if (!group) return;
+  refreshAssemblyGroupRuntime(group);
+  const size = group.bbox.getSize(new THREE.Vector3());
+  const axisKey = axis === 'width' ? 'x' : axis === 'length' ? 'y' : 'z';
+  const axisSizeKey = axis === 'width' ? 'x' : axis === 'length' ? 'y' : 'z';
+  const nextChildren = group.children.map((childRef) => {
+    const instance = getInstanceById(childRef.instanceId);
+    const nextLocal = childRef.localPosition.clone();
+    if (!instance) return { ...childRef };
+    const pieceSize = getInstanceBoxSize(instance);
+    nextLocal[axisKey] = size[axisSizeKey] - childRef.localPosition[axisKey] - pieceSize[axisSizeKey];
+    return {
+      instanceId: childRef.instanceId,
+      localPosition: nextLocal,
+      nextSymmetry: {
+        ...instance.symmetry,
+        [axis]: !instance.symmetry?.[axis],
+      },
+    };
+  });
+
+  const candidateBoxes = nextChildren.map((childRef) => {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) return null;
+    return getInstanceBox(instance, group.origin.clone().add(childRef.localPosition));
+  }).filter(Boolean);
+  const ignoredInstanceIds = new Set(group.children.map((child) => child.instanceId));
+  if (collidesBoxesWithScene(candidateBoxes, { ignoredInstanceIds, ignoredGroupId: group.id })) {
+    setMessage('Symétrie groupe refusée : collision avec une autre pièce.');
+    return;
+  }
+
+  for (const childRef of nextChildren) {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) continue;
+    applySymmetryState(instance, childRef.nextSymmetry, { skipCollisionCheck: true, skipDirtyMark: true });
+  }
+  group.children = nextChildren.map(({ instanceId, localPosition }) => ({ instanceId, localPosition }));
+  refreshAssemblyGroupRuntime(group);
+  syncGroupInstanceWorldPositions(group);
+  refreshInstanceList();
+  updateStats();
+  updateSelectionBox();
+  setMessage('');
+  markShipDirty();
+}
+
+function applySymmetryState(instance, nextSymmetry, options = {}) {
   const catalogPiece = getCatalogPieceById(instance.catalogPieceId);
   if (!catalogPiece) return;
 
   const nextGeometry = buildGeometry(catalogPiece, nextSymmetry);
   const candidateBox = getReservationBoxForCatalogPiece(catalogPiece, instance.group.position);
-  if (collidesWithOthers(candidateBox, instance.id)) {
+  if (!options.skipCollisionCheck && collidesWithOthers(candidateBox, instance.id, { ignoredGroupId: instance.groupId ?? null })) {
     nextGeometry.dispose();
     setMessage('Symétrie refusée : collision avec une autre pièce.');
     return;
@@ -818,7 +1211,7 @@ function applySymmetryState(instance, nextSymmetry) {
   updateStats();
   updateSelectionBox();
   setMessage('');
-  markShipDirty();
+  if (!options.skipDirtyMark) markShipDirty();
 }
 
 function getBoxAt(geometry, position) {
@@ -841,6 +1234,92 @@ function getInstanceBox(instance, position = instance.group.position) {
   return getInstanceReservationBox(instance, position);
 }
 
+function getInstanceBoxSize(instance) {
+  return getInstanceReservationBox(instance).getSize(new THREE.Vector3());
+}
+
+function getGroupChildWorldPosition(group, childRef, origin = group.origin) {
+  return origin.clone().add(childRef.localPosition);
+}
+
+function getGroupChildBoxes(group, origin = group.origin) {
+  return group.children.map((childRef) => {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) return null;
+    return getInstanceBox(instance, getGroupChildWorldPosition(group, childRef, origin));
+  }).filter(Boolean);
+}
+
+function computeBoundingBoxFromBoxes(boxes) {
+  const box = new THREE.Box3();
+  for (const childBox of boxes) box.union(childBox);
+  return box;
+}
+
+function computeGroupBoundingBox(group, origin = group.origin) {
+  return computeBoundingBoxFromBoxes(getGroupChildBoxes(group, origin));
+}
+
+function computeBoundingCenter(box) {
+  return box.getCenter(new THREE.Vector3());
+}
+
+function syncGroupInstanceWorldPositions(group, origin = group.origin) {
+  for (const childRef of group.children) {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) continue;
+    instance.group.position.copy(getGroupChildWorldPosition(group, childRef, origin));
+  }
+}
+
+function refreshAssemblyGroupRuntime(group) {
+  group.bbox = computeGroupBoundingBox(group, group.origin);
+  group.pivot = computeBoundingCenter(group.bbox);
+}
+
+function getGroupExternalAnchors(group, origin = group.origin) {
+  const groupBoxes = group.children.map((childRef) => {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) return null;
+    return {
+      instanceId: childRef.instanceId,
+      box: getInstanceBox(instance, getGroupChildWorldPosition(group, childRef, origin)),
+    };
+  }).filter(Boolean);
+  const step = getMagnetStep();
+  const outwardDistance = Math.max(step * 0.26, 1);
+  const anchors = [];
+
+  for (const childRef of group.children) {
+    const instance = getInstanceById(childRef.instanceId);
+    if (!instance) continue;
+    const childOrigin = getGroupChildWorldPosition(group, childRef, origin);
+    const childAnchors = getWorldAttachmentAnchors(getCatalogPieceById(instance.catalogPieceId), instance.symmetry, childOrigin);
+    for (const anchor of childAnchors) {
+      const outwardPoint = anchor.position.clone().add(anchor.normal.clone().multiplyScalar(outwardDistance));
+      const blockedInsideGroup = groupBoxes.some(({ instanceId, box }) => instanceId !== instance.id && box.containsPoint(outwardPoint));
+      if (blockedInsideGroup) continue;
+      anchors.push({
+        ...anchor,
+        ownerType: 'group',
+        ownerId: group.id,
+        sourcePieceId: instance.id,
+      });
+    }
+  }
+
+  return anchors;
+}
+
+function isGroupPlacementValid(group, origin = group.origin, options = {}) {
+  const candidateBoxes = getGroupChildBoxes(group, origin);
+  const ignoredIds = new Set(group.children.map((child) => child.instanceId));
+  if (options.extraIgnoredIds) {
+    for (const id of options.extraIgnoredIds) ignoredIds.add(id);
+  }
+  return !collidesBoxesWithScene(candidateBoxes, { ignoredInstanceIds: ignoredIds, ignoredGroupId: group.id });
+}
+
 function boxesOverlap(a, b) {
   return (
     a.min.x < b.max.x - COLLISION_EPSILON &&
@@ -852,15 +1331,40 @@ function boxesOverlap(a, b) {
   );
 }
 
-function collidesWithOthers(candidateBox, ignoredInstanceId) {
-  return state.instances.some((instance) => {
-    if (instance.id === ignoredInstanceId) return false;
-    return boxesOverlap(candidateBox, getInstanceBox(instance));
+function collidesBoxesWithScene(candidateBoxes, options = {}) {
+  const boxes = Array.isArray(candidateBoxes) ? candidateBoxes : [candidateBoxes];
+  const ignoredInstanceIds = options.ignoredInstanceIds ?? new Set();
+  const ignoredGroupId = options.ignoredGroupId ?? null;
+  for (const instance of state.instances) {
+    if (ignoredInstanceIds.has(instance.id)) continue;
+    if (instance.groupId) continue;
+    const instanceBox = getInstanceBox(instance);
+    if (boxes.some((candidateBox) => boxesOverlap(candidateBox, instanceBox))) return true;
+  }
+
+  for (const group of state.assemblyGroups) {
+    if (group.id === ignoredGroupId) continue;
+    const groupBoxes = getGroupChildBoxes(group);
+    for (const candidateBox of boxes) {
+      if (groupBoxes.some((groupBox) => boxesOverlap(candidateBox, groupBox))) return true;
+    }
+  }
+  return false;
+}
+
+function collidesWithOthers(candidateBox, ignoredInstanceId, options = {}) {
+  const ignoredInstanceIds = new Set(options.ignoredInstanceIds ?? []);
+  if (ignoredInstanceId) ignoredInstanceIds.add(ignoredInstanceId);
+  return collidesBoxesWithScene([candidateBox], {
+    ignoredInstanceIds,
+    ignoredGroupId: options.ignoredGroupId ?? null,
   });
 }
 
 function hasCollision(instance, position) {
-  return collidesWithOthers(getInstanceBox(instance, position), instance.id);
+  return collidesWithOthers(getInstanceBox(instance, position), instance.id, {
+    ignoredGroupId: instance.groupId ?? null,
+  });
 }
 
 function calculateShipStatsForInstances(instances) {
@@ -930,6 +1434,15 @@ function calculateShipStats() {
 }
 
 function getActiveStatsSelection() {
+  const selectedAssemblyGroup = getSelectedAssemblyGroup();
+  if (selectedAssemblyGroup) {
+    return {
+      label: `${selectedAssemblyGroup.name} (${selectedAssemblyGroup.children.length} pièce(s))`,
+      instances: selectedAssemblyGroup.children.map((child) => getInstanceById(child.instanceId)).filter(Boolean),
+      fallbackMissingToZero: false,
+    };
+  }
+
   const selectedGroupIds = Array.isArray(state.selectedGroupIds) ? state.selectedGroupIds.filter(Boolean) : [];
   if (selectedGroupIds.length) {
     return {
@@ -984,7 +1497,9 @@ function updateStats() {
     return;
   }
 
-  if (dom.statsOverlayTitle) dom.statsOverlayTitle.textContent = 'Info pièce';
+  if (dom.statsOverlayTitle) {
+    dom.statsOverlayTitle.textContent = getSelectedAssemblyGroup() || state.selectedGroupIds.length ? 'Info groupe' : 'Info pièce';
+  }
   dom.stats.textContent = [
     selection.label,
     '',
@@ -1018,6 +1533,11 @@ function fmt(value) {
 }
 
 function getSelectedInstancesForCommands() {
+  const selectedAssemblyGroup = getSelectedAssemblyGroup();
+  if (selectedAssemblyGroup) {
+    return selectedAssemblyGroup.children.map((child) => getInstanceById(child.instanceId)).filter(Boolean);
+  }
+
   const selectedGroupIds = Array.isArray(state.selectedGroupIds) ? state.selectedGroupIds.filter(Boolean) : [];
   if (selectedGroupIds.length) {
     return state.instances.filter((instance) => selectedGroupIds.includes(instance.id));
@@ -1079,6 +1599,23 @@ function updateEmptyHint() {
 }
 
 function updateSelectionBox() {
+  const selectedGroup = getSelectedAssemblyGroup();
+  if (selectedGroup) {
+    refreshAssemblyGroupRuntime(selectedGroup);
+    selectionBox.box.copy(selectedGroup.bbox);
+    selectionBox.visible = true;
+    return;
+  }
+
+  const multiSelection = state.selectedGroupIds
+    .map((id) => getInstanceById(id))
+    .filter(Boolean);
+  if (multiSelection.length) {
+    selectionBox.box.copy(computeBoundingBoxFromBoxes(multiSelection.map((instance) => getInstanceReservationBox(instance))));
+    selectionBox.visible = true;
+    return;
+  }
+
   const selected = getSelectedInstance();
   if (!selected) {
     selectionBox.visible = false;
@@ -1117,6 +1654,35 @@ function fitCameraToAll(renderNow = true) {
   positionCameraForCurrentView(center);
   orbitControls.update();
   if (renderNow) renderer.render(scene, camera);
+}
+
+function fitCurrentSelection(renderNow = true) {
+  const selectedGroup = getSelectedAssemblyGroup();
+  if (selectedGroup) {
+    refreshAssemblyGroupRuntime(selectedGroup);
+    fitOrthographicBox(selectedGroup.bbox, 1.35);
+    const center = selectedGroup.bbox.getCenter(new THREE.Vector3());
+    orbitControls.target.copy(center);
+    positionCameraForCurrentView(center);
+    orbitControls.update();
+    if (renderNow) renderer.render(scene, camera);
+    return;
+  }
+
+  const multiSelection = state.selectedGroupIds.map((id) => getInstanceById(id)).filter(Boolean);
+  if (multiSelection.length) {
+    const box = computeBoundingBoxFromBoxes(multiSelection.map((instance) => getInstanceReservationBox(instance)));
+    fitOrthographicBox(box, 1.35);
+    const center = box.getCenter(new THREE.Vector3());
+    orbitControls.target.copy(center);
+    positionCameraForCurrentView(center);
+    orbitControls.update();
+    if (renderNow) renderer.render(scene, camera);
+    return;
+  }
+
+  const selected = getSelectedInstance();
+  if (selected) fitCameraToObject(selected.group, renderNow);
 }
 
 function fitOrthographicBox(box, padding = 1.25) {
@@ -1344,6 +1910,38 @@ function applyMagneticSnap(instance, position) {
   return applyMagneticSnapForCatalogPiece(catalogPiece, position, instance.id);
 }
 
+function getSceneSnapBoxes(options = {}) {
+  const boxes = [];
+  const ignoredInstanceIds = options.ignoredInstanceIds ?? new Set();
+  const ignoredGroupId = options.ignoredGroupId ?? null;
+  for (const instance of state.instances) {
+    if (ignoredInstanceIds.has(instance.id)) continue;
+    if (instance.groupId) continue;
+    boxes.push(getInstanceReservationBox(instance));
+  }
+  for (const group of state.assemblyGroups) {
+    if (group.id === ignoredGroupId) continue;
+    boxes.push(...getGroupChildBoxes(group));
+  }
+  return boxes;
+}
+
+function getSceneAnchorTargets(options = {}) {
+  const targets = [];
+  const ignoredInstanceIds = options.ignoredInstanceIds ?? new Set();
+  const ignoredGroupId = options.ignoredGroupId ?? null;
+  for (const instance of state.instances) {
+    if (ignoredInstanceIds.has(instance.id)) continue;
+    if (instance.groupId) continue;
+    targets.push(...getWorldAttachmentAnchorsForInstance(instance));
+  }
+  for (const group of state.assemblyGroups) {
+    if (group.id === ignoredGroupId) continue;
+    targets.push(...getGroupExternalAnchors(group));
+  }
+  return targets;
+}
+
 function applyMagneticSnapForCatalogPiece(catalogPiece, position, excludeInstanceId = null) {
   if (!catalogPiece) return position;
   const step = getMagnetStep();
@@ -1363,9 +1961,7 @@ function applyMagneticSnapForCatalogPiece(catalogPiece, position, excludeInstanc
   };
 
   const box = getReservationBoxForCatalogPiece(catalogPiece, position);
-  for (const other of state.instances) {
-    if (other.id === excludeInstanceId) continue;
-    const otherBox = getInstanceReservationBox(other);
+  for (const otherBox of getSceneSnapBoxes({ ignoredInstanceIds: new Set(excludeInstanceId ? [excludeInstanceId] : []) })) {
 
     evaluate('x', box.min.x - otherBox.max.x, otherBox.max.x - box.min.x);
     evaluate('x', box.max.x - otherBox.min.x, otherBox.min.x - box.max.x);
@@ -1380,7 +1976,7 @@ function applyMagneticSnapForCatalogPiece(catalogPiece, position, excludeInstanc
 
 
 function resolveSideAnchorSnapPosition(instance, targetPosition, options = {}) {
-  if (!instance || state.instances.length <= 1) return null;
+  if (!instance || (state.instances.length + state.assemblyGroups.length) <= 1) return null;
   if (!isSaneWorldPosition(targetPosition)) return null;
 
   const catalogPiece = getCatalogPieceById(instance.catalogPieceId);
@@ -1395,46 +1991,39 @@ function resolveSideAnchorSnapPosition(instance, targetPosition, options = {}) {
   if (!localAnchors.length) return null;
 
   let best = null;
-  for (const other of state.instances) {
-    if (other.id === instance.id) continue;
-    const otherBox = getInstanceReservationBox(other);
-    const otherAnchors = getWorldAttachmentAnchorsForInstance(other).filter(isSideAttachmentAnchor);
-    if (!otherAnchors.length) continue;
+  const otherAnchors = getSceneAnchorTargets({ ignoredInstanceIds: new Set([instance.id]), ignoredGroupId: instance.groupId ?? null })
+    .filter(isSideAttachmentAnchor);
+  const otherBoxes = getSceneSnapBoxes({ ignoredInstanceIds: new Set([instance.id]), ignoredGroupId: instance.groupId ?? null });
 
-    for (const localAnchor of localAnchors) {
-      for (const otherAnchor of otherAnchors) {
-        if (!areOpposedAnchors(localAnchor, otherAnchor)) continue;
+  for (const localAnchor of localAnchors) {
+    for (const otherAnchor of otherAnchors) {
+      if (!areOpposedAnchors(localAnchor, otherAnchor)) continue;
 
-        const contactAxis = getSideSnapContactAxis(localAnchor, otherAnchor);
-        if (!contactAxis) continue;
+      const contactAxis = getSideSnapContactAxis(localAnchor, otherAnchor);
+      if (!contactAxis) continue;
 
-        const candidate = otherAnchor.position.clone().sub(localAnchor.position);
-        snapPositionToHalfUnit(candidate);
-        if (!isSaneWorldPosition(candidate)) continue;
+      const candidate = otherAnchor.position.clone().sub(localAnchor.position);
+      snapPositionToHalfUnit(candidate);
+      if (!isSaneWorldPosition(candidate)) continue;
 
-        const tangentAxis = contactAxis === 'x' ? 'y' : 'x';
-        const primaryDelta = Math.abs(candidate[contactAxis] - targetPosition[contactAxis]);
-        const tangentDelta = Math.abs(candidate[tangentAxis] - targetPosition[tangentAxis]);
-        const verticalDelta = Math.abs(candidate.z - targetPosition.z);
+      const tangentAxis = contactAxis === 'x' ? 'y' : 'x';
+      const primaryDelta = Math.abs(candidate[contactAxis] - targetPosition[contactAxis]);
+      const tangentDelta = Math.abs(candidate[tangentAxis] - targetPosition[tangentAxis]);
+      const verticalDelta = Math.abs(candidate.z - targetPosition.z);
 
-        if (primaryDelta > maxDistance) continue;
-        if (tangentDelta > tangentLimit) continue;
-        if (verticalDelta > maxVerticalDistance) continue;
+      if (primaryDelta > maxDistance) continue;
+      if (tangentDelta > tangentLimit) continue;
+      if (verticalDelta > maxVerticalDistance) continue;
 
-        const candidateBox = getInstanceReservationBox(instance, candidate);
-        if (collidesWithOthers(candidateBox, instance.id)) continue;
-        if (!reservationBoxesTouch(candidateBox, otherBox)) continue;
+      const candidateBox = getInstanceReservationBox(instance, candidate);
+      if (collidesWithOthers(candidateBox, instance.id, { ignoredGroupId: instance.groupId ?? null })) continue;
+      if (!otherBoxes.some((otherBox) => reservationBoxesTouch(candidateBox, otherBox))) continue;
 
-        // Recheck exact anchor alignment. The candidate is accepted only if the
-        // chosen anchor pair still overlaps after grid snapping.
-        const candidateAnchorWorld = localAnchor.position.clone().add(candidate);
-        if (candidateAnchorWorld.distanceTo(otherAnchor.position) > Math.max(2, step * 0.12)) continue;
+      const candidateAnchorWorld = localAnchor.position.clone().add(candidate);
+      if (candidateAnchorWorld.distanceTo(otherAnchor.position) > Math.max(2, step * 0.12)) continue;
 
-        // Side snap is a lateral correction, not a free 3D teleport. It can only
-        // resolve the contact axis and a tiny tangent/height drift.
-        const score = primaryDelta + tangentDelta * 2 + verticalDelta * 4;
-        if (!best || score < best.score) best = { position: candidate, score };
-      }
+      const score = primaryDelta + tangentDelta * 2 + verticalDelta * 4;
+      if (!best || score < best.score) best = { position: candidate, score };
     }
   }
 
@@ -1617,6 +2206,134 @@ function generateHalfStepFaceAnchors(size) {
   return anchors;
 }
 
+function getGroupBoundingBoxAt(group, origin) {
+  return computeGroupBoundingBox(group, origin);
+}
+
+function applyMagneticSnapForGroup(group, origin) {
+  const step = getMagnetStep();
+  const threshold = Math.max(step * 0.75, 24);
+  let best = null;
+  const box = getGroupBoundingBoxAt(group, origin);
+
+  const evaluate = (axis, delta, correction) => {
+    const distance = Math.abs(delta);
+    if (distance > threshold) return;
+    const candidate = origin.clone();
+    candidate[axis] += correction;
+    snapPositionToHalfUnit(candidate);
+    if (!isGroupPlacementValid(group, candidate)) return;
+    if (!best || distance < best.score) best = { position: candidate, score: distance };
+  };
+
+  for (const otherBox of getSceneSnapBoxes({ ignoredInstanceIds: new Set(group.children.map((child) => child.instanceId)), ignoredGroupId: group.id })) {
+    evaluate('x', box.min.x - otherBox.max.x, otherBox.max.x - box.min.x);
+    evaluate('x', box.max.x - otherBox.min.x, otherBox.min.x - box.max.x);
+    evaluate('y', box.min.y - otherBox.max.y, otherBox.max.y - box.min.y);
+    evaluate('y', box.max.y - otherBox.min.y, otherBox.min.y - box.max.y);
+    evaluate('z', box.min.z - otherBox.max.z, otherBox.max.z - box.min.z);
+    evaluate('z', box.max.z - otherBox.min.z, otherBox.min.z - box.max.z);
+  }
+
+  return best?.position ?? origin;
+}
+
+function resolveSideAnchorSnapPositionForGroup(group, targetOrigin, options = {}) {
+  if (!group || (state.instances.length + state.assemblyGroups.length) <= 1) return null;
+  const step = getMagnetStep();
+  const maxDistance = options.maxDistance ?? Math.max(step * 3.5, 175);
+  const tangentLimit = options.tangentLimit ?? Math.max(step * SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER, 62.5);
+  const maxVerticalDistance = options.maxVerticalDistance ?? Math.max(step * 0.75, 37.5);
+  const localAnchors = getGroupExternalAnchors(group, new THREE.Vector3()).filter(isSideAttachmentAnchor);
+  if (!localAnchors.length) return null;
+
+  let best = null;
+  const otherAnchors = getSceneAnchorTargets({
+    ignoredInstanceIds: new Set(group.children.map((child) => child.instanceId)),
+    ignoredGroupId: group.id,
+  }).filter(isSideAttachmentAnchor);
+  const otherBoxes = getSceneSnapBoxes({
+    ignoredInstanceIds: new Set(group.children.map((child) => child.instanceId)),
+    ignoredGroupId: group.id,
+  });
+
+  for (const localAnchor of localAnchors) {
+    for (const otherAnchor of otherAnchors) {
+      if (!areOpposedAnchors(localAnchor, otherAnchor)) continue;
+      const contactAxis = getSideSnapContactAxis(localAnchor, otherAnchor);
+      if (!contactAxis) continue;
+
+      const candidate = otherAnchor.position.clone().sub(localAnchor.position);
+      snapPositionToHalfUnit(candidate);
+      const tangentAxis = contactAxis === 'x' ? 'y' : 'x';
+      const primaryDelta = Math.abs(candidate[contactAxis] - targetOrigin[contactAxis]);
+      const tangentDelta = Math.abs(candidate[tangentAxis] - targetOrigin[tangentAxis]);
+      const verticalDelta = Math.abs(candidate.z - targetOrigin.z);
+      if (primaryDelta > maxDistance || tangentDelta > tangentLimit || verticalDelta > maxVerticalDistance) continue;
+      if (!isGroupPlacementValid(group, candidate)) continue;
+
+      const candidateBox = getGroupBoundingBoxAt(group, candidate);
+      if (!otherBoxes.some((otherBox) => reservationBoxesTouch(candidateBox, otherBox))) continue;
+
+      const candidateAnchorWorld = localAnchor.position.clone().add(candidate);
+      if (candidateAnchorWorld.distanceTo(otherAnchor.position) > Math.max(2, step * 0.12)) continue;
+
+      const score = primaryDelta + tangentDelta * 2 + verticalDelta * 4;
+      if (!best || score < best.score) best = { position: candidate, score };
+    }
+  }
+
+  return best?.position ?? null;
+}
+
+function normalizeCandidateGroupOrigin(group, origin) {
+  const next = origin.clone();
+  next.z = group.origin.z;
+  snapPositionToHalfUnit(next);
+  const sideSnap = resolveSideAnchorSnapPositionForGroup(group, next, {
+    maxDistance: getSideSnapHoldDistance(),
+    tangentLimit: Math.max(getMagnetStep() * SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER, 62.5),
+  });
+  if (sideSnap) return sideSnap;
+  return applyMagneticSnapForGroup(group, next);
+}
+
+function resolveVerticalCollisionOriginForGroup(group, targetOrigin) {
+  if (isGroupPlacementValid(group, targetOrigin)) return targetOrigin;
+  const direction = getAutoVerticalDirection();
+  if (!direction) return targetOrigin;
+  const step = getMagnetStep();
+  for (let i = 1; i <= 12; i += 1) {
+    const candidate = targetOrigin.clone();
+    candidate.z = snapValue(targetOrigin.z + direction * step * i, step);
+    if (isGroupPlacementValid(group, candidate)) return candidate;
+  }
+  return targetOrigin;
+}
+
+function tryMoveAssemblyGroup(group, targetOrigin, options = {}) {
+  const resolvedOrigin = options.autoVertical
+    ? resolveVerticalCollisionOriginForGroup(group, targetOrigin)
+    : targetOrigin;
+  if (!isSaneWorldPosition(resolvedOrigin)) {
+    setMessage('Déplacement refusé : position de groupe invalide.');
+    return false;
+  }
+  if (!isGroupPlacementValid(group, resolvedOrigin)) {
+    setMessage('Déplacement groupe refusé : collision avec une autre pièce.');
+    return false;
+  }
+  group.origin.copy(resolvedOrigin);
+  refreshAssemblyGroupRuntime(group);
+  syncGroupInstanceWorldPositions(group);
+  dom.heightInput.value = String(Math.round(group.origin.z));
+  updateAttachmentStates();
+  updateStats();
+  updateSelectionBox();
+  setMessage('');
+  return true;
+}
+
 function tryMoveInstance(instance, targetPosition, reason = 'Déplacement refusé : collision avec une autre pièce.', options = {}) {
   // Side-anchor snap is handled before this function, with a narrow hold
   // distance. Do not re-apply a wide side snap here, otherwise it pins the piece
@@ -1685,7 +2402,30 @@ function applyDragPosition(instance, position) {
   if (moved) state.drag.lastValidPosition.copy(instance.group.position);
 }
 
+function applyGroupDragPosition(group, origin) {
+  if (!isSaneDragTarget(origin, state.drag?.startPosition)) {
+    setMessage('Déplacement ignoré : cible hors limites.');
+    return;
+  }
+  const next = normalizeCandidateGroupOrigin(group, origin);
+  if (!isSaneDragTarget(next, state.drag?.startPosition)) {
+    setMessage('Déplacement ignoré : résolution hors limites.');
+    return;
+  }
+  const moved = tryMoveAssemblyGroup(group, next, { autoVertical: true });
+  if (moved) state.drag.lastValidPosition.copy(group.origin);
+}
+
 function moveSelectedHeight(delta) {
+  const selectedGroup = getSelectedAssemblyGroup();
+  if (selectedGroup) {
+    const before = selectedGroup.origin.z;
+    const next = selectedGroup.origin.clone();
+    next.z = snapValue(next.z + delta, getMagnetStep());
+    if (tryMoveAssemblyGroup(selectedGroup, next) && selectedGroup.origin.z !== before) markShipDirty();
+    return;
+  }
+
   const selected = getSelectedInstance();
   if (!selected) return;
   const before = selected.group.position.z;
@@ -1697,6 +2437,17 @@ function moveSelectedHeight(delta) {
 }
 
 function setSelectedHeight(value) {
+  const selectedGroup = getSelectedAssemblyGroup();
+  if (selectedGroup) {
+    const before = selectedGroup.origin.z;
+    const next = selectedGroup.origin.clone();
+    next.z = snapValue(Number(value) || 0, getMagnetStep());
+    tryMoveAssemblyGroup(selectedGroup, next);
+    dom.heightInput.value = String(Math.round(selectedGroup.origin.z));
+    if (selectedGroup.origin.z !== before) markShipDirty();
+    return;
+  }
+
   const selected = getSelectedInstance();
   if (!selected) return;
   const before = selected.group.position.z;
@@ -1758,17 +2509,27 @@ function shouldPreserveSelectionOnPointerDown(target) {
 function onGlobalPointerDown(event) {
   if (event.button !== 0) return;
   if (state.drag) return;
-  if (!getSelectedInstance()) return;
+  if (!getSelectedInstance() && !getSelectedAssemblyGroup() && !state.selectedGroupIds.length) return;
 
   const target = event.target;
   if (target === renderer.domElement) {
     const picked = pickInstance(event);
-    if (!picked) selectInstance(null);
+    if (!picked) {
+      clearSelection();
+      refreshInstanceList();
+      updateSelectionUi();
+      updateStats();
+      updateSelectionBox();
+    }
     return;
   }
 
   if (shouldPreserveSelectionOnPointerDown(target)) return;
-  selectInstance(null);
+  clearSelection();
+  refreshInstanceList();
+  updateSelectionUi();
+  updateStats();
+  updateSelectionBox();
 }
 
 function onPointerDown(event) {
@@ -1779,18 +2540,31 @@ function onPointerDown(event) {
   event.preventDefault();
   event.stopImmediatePropagation();
 
-  selectInstance(picked.id);
-  dragPlane.set(new THREE.Vector3(0, 0, 1), -picked.group.position.z);
+  if (event.shiftKey) {
+    if (!picked.groupId) togglePieceInMultiSelection(picked.id);
+    return;
+  }
+
+  const pickedGroup = picked.groupId ? getAssemblyGroupById(picked.groupId) : null;
+  if (pickedGroup) {
+    selectAssemblyGroup(pickedGroup.id);
+    dragPlane.set(new THREE.Vector3(0, 0, 1), -pickedGroup.origin.z);
+  } else {
+    selectInstance(picked.id);
+    dragPlane.set(new THREE.Vector3(0, 0, 1), -picked.group.position.z);
+  }
 
   if (!intersectDragPlane(event, dragHit)) return;
 
   state.drag = {
     pointerId: event.pointerId,
+    entityType: pickedGroup ? 'group' : 'piece',
     instanceId: picked.id,
+    groupId: pickedGroup?.id ?? null,
     startHit: dragHit.clone(),
-    startPosition: picked.group.position.clone(),
-    offset: picked.group.position.clone().sub(dragHit),
-    lastValidPosition: picked.group.position.clone(),
+    startPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
+    offset: (pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone()).sub(dragHit),
+    lastValidPosition: pickedGroup ? pickedGroup.origin.clone() : picked.group.position.clone(),
   };
 
   orbitControls.enabled = false;
@@ -1802,14 +2576,15 @@ function onPointerMove(event) {
   if (!state.drag || event.pointerId !== state.drag.pointerId) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-
   const instance = state.instances.find((item) => item.id === state.drag.instanceId);
-  if (!instance || !intersectDragPlane(event, dragHit)) return;
+  const group = state.drag.groupId ? getAssemblyGroupById(state.drag.groupId) : null;
+  if ((!instance && !group) || !intersectDragPlane(event, dragHit)) return;
 
   const delta = dragHit.clone().sub(state.drag.startHit);
   const target = state.drag.startPosition.clone().add(delta);
   target.z = state.drag.startPosition.z;
-  applyDragPosition(instance, target);
+  if (state.drag.entityType === 'group' && group) applyGroupDragPosition(group, target);
+  else if (instance) applyDragPosition(instance, target);
 }
 
 function onPointerUp(event) {
@@ -2984,6 +3759,7 @@ function serializePlacedPiece(instance) {
     },
     rotation: { ...instance.rotation },
     symmetry: { ...instance.symmetry },
+    group_id: instance.groupId ?? null,
     material: {
       color: `#${instance.material.color.getHexString()}`,
     },
@@ -2991,6 +3767,30 @@ function serializePlacedPiece(instance) {
     components: [],
     modifiers: [],
     metadata: { locked: false, notes: [] },
+  };
+}
+
+function serializeAssemblyGroup(group) {
+  refreshAssemblyGroupRuntime(group);
+  return {
+    group_id: group.id,
+    type: 'group',
+    name: group.name,
+    origin: vectorToPlain(group.origin),
+    pivot: vectorToPlain(group.pivot),
+    bbox: {
+      min: vectorToPlain(group.bbox.min),
+      max: vectorToPlain(group.bbox.max),
+    },
+    children: group.children.map((child) => ({
+      instance_id: child.instanceId,
+      local_position: vectorToPlain(child.localPosition),
+    })),
+    metadata: {
+      created_from_selection: Boolean(group.metadata?.createdFromSelection),
+      can_ungroup: group.metadata?.canUngroup !== false,
+      saved_as_model: Boolean(group.metadata?.savedAsModel),
+    },
   };
 }
 
@@ -3002,6 +3802,7 @@ function serializeCurrentShip({ localId, name, createdAt }) {
     createdAt,
     updatedAt: new Date().toISOString(),
     pieces: state.instances.map(serializePlacedPiece),
+    groups: state.assemblyGroups.map(serializeAssemblyGroup),
     computedSpecs: calculateShipStats(),
     metadata: {
       created_with: 'spacecraft_c1_web_editor',
@@ -3013,11 +3814,12 @@ function serializeCurrentShip({ localId, name, createdAt }) {
 function loadShipCreationIntoScene(shipCreation) {
   clearScene({ skipPersist: true });
   state.nextInstanceId = 1;
+  state.nextGroupId = 1;
 
   for (const piece of shipCreation.ship?.pieces ?? []) {
     const catalogPiece = getCatalogPieceById(piece.catalog_piece_id);
     if (!catalogPiece) continue;
-    createInstance(catalogPiece, {
+    const instance = createInstance(catalogPiece, {
       id: piece.placed_piece_id,
       label: piece.label,
       symmetry: piece.symmetry,
@@ -3030,9 +3832,42 @@ function loadShipCreationIntoScene(shipCreation) {
         Number(piece.position?.z) || 0,
       ),
     });
+    if (instance) instance.groupId = piece.group_id ?? null;
   }
 
-  selectInstance(state.instances[0]?.id ?? null);
+  for (const rawGroup of shipCreation.ship?.groups ?? []) {
+    const group = {
+      id: createNextGroupId({ id: rawGroup.group_id }),
+      type: 'group',
+      name: rawGroup.name || rawGroup.group_id,
+      origin: cloneVector3Like(rawGroup.origin),
+      pivot: cloneVector3Like(rawGroup.pivot),
+      bbox: new THREE.Box3(
+        cloneVector3Like(rawGroup.bbox?.min),
+        cloneVector3Like(rawGroup.bbox?.max),
+      ),
+      children: (rawGroup.children ?? []).map((child) => ({
+        instanceId: child.instance_id,
+        localPosition: cloneVector3Like(child.local_position),
+      })).filter((child) => getInstanceById(child.instanceId)),
+      metadata: {
+        createdFromSelection: rawGroup.metadata?.created_from_selection !== false,
+        canUngroup: rawGroup.metadata?.can_ungroup !== false,
+        savedAsModel: Boolean(rawGroup.metadata?.saved_as_model),
+      },
+    };
+    if (!group.children.length) continue;
+    for (const child of group.children) {
+      const instance = getInstanceById(child.instanceId);
+      if (instance) instance.groupId = group.id;
+    }
+    state.assemblyGroups.push(group);
+    syncGroupInstanceWorldPositions(group, group.origin);
+    refreshAssemblyGroupRuntime(group);
+  }
+
+  if (state.assemblyGroups[0]) selectAssemblyGroup(state.assemblyGroups[0].id);
+  else selectInstance(getLooseInstances()[0]?.id ?? null);
   updateStats();
   fitCameraToAll(false);
   setMessage('');
@@ -3168,11 +4003,37 @@ function bindEvents() {
     dom.exportCatalogBtn?.addEventListener('click', exportCatalog);
   }
 
-  dom.instanceSelect.addEventListener('change', () => selectInstance(dom.instanceSelect.value));
+  dom.instanceSelect.addEventListener('change', () => {
+    const selectedOptions = [...dom.instanceSelect.selectedOptions];
+    if (!selectedOptions.length) {
+      clearSelection();
+      refreshInstanceList();
+      updateSelectionUi();
+      updateStats();
+      updateSelectionBox();
+      return;
+    }
+    if (selectedOptions.length === 1) {
+      const option = selectedOptions[0];
+      if (option.dataset.entryType === 'group') selectAssemblyGroup(option.value);
+      else selectPiece(option.value);
+      return;
+    }
+    selectPieceMulti(selectedOptions.filter((option) => option.dataset.entryType === 'piece').map((option) => option.value));
+  });
   dom.duplicatePieceBtn?.addEventListener('click', duplicateSelectedInstance);
   dom.removePieceBtn?.addEventListener('click', removeSelectedInstance);
+  dom.createGroupBtn?.addEventListener('click', createAssemblyGroupFromSelection);
+  dom.ungroupBtn?.addEventListener('click', ungroupSelectedAssemblyGroup);
+  dom.renameGroupBtn?.addEventListener('click', renameSelectedAssemblyGroup);
   dom.clearSceneBtn.addEventListener('click', clearScene);
-  dom.deselectBtn?.addEventListener('click', () => selectInstance(null));
+  dom.deselectBtn?.addEventListener('click', () => {
+    clearSelection();
+    refreshInstanceList();
+    updateSelectionUi();
+    updateStats();
+    updateSelectionBox();
+  });
   dom.shipList?.addEventListener('change', () => {
     dom.openShipBtn.disabled = !dom.shipList.value;
   });
@@ -3232,9 +4093,9 @@ function bindEvents() {
   });
 
   dom.colorInput.addEventListener('input', () => {
-    const selected = getSelectedInstance();
-    if (!selected) return;
-    selected.material.color.set(dom.colorInput.value);
+    const selectedInstances = getSelectedInstancesForCommands();
+    if (!selectedInstances.length) return;
+    for (const selected of selectedInstances) selected.material.color.set(dom.colorInput.value);
     markShipDirty();
   });
 
@@ -3258,6 +4119,8 @@ function bindEvents() {
   });
 
   dom.screenshotBtn?.addEventListener('click', takeScreenshot);
+  dom.fitSelectedBtn?.addEventListener('click', () => fitCurrentSelection());
+  dom.fitAllBtn?.addEventListener('click', () => fitCameraToAll());
 
   document.addEventListener('pointerdown', onGlobalPointerDown, true);
   renderer.domElement.addEventListener('pointerdown', onPointerDown, true);
@@ -3272,29 +4135,45 @@ function bindEvents() {
   window.addEventListener('keydown', (event) => {
     const tagName = document.activeElement?.tagName?.toLowerCase();
     if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') return;
+    const key = event.key.toLowerCase();
 
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+    if ((event.ctrlKey || event.metaKey) && key === 'c') {
       if (copySelectedInstances()) event.preventDefault();
       return;
     }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+    if ((event.ctrlKey || event.metaKey) && key === 'v') {
       if (pasteCopiedInstances()) event.preventDefault();
       return;
     }
+    if ((event.ctrlKey || event.metaKey) && key === 'g') {
+      if (createAssemblyGroupFromSelection()) event.preventDefault();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && key === 'b') {
+      if (getSelectedAssemblyGroup()) {
+        ungroupSelectedAssemblyGroup();
+        event.preventDefault();
+      }
+      return;
+    }
 
-    if (event.key.toLowerCase() === 'f') {
-      const selected = getSelectedInstance();
-      if (selected) fitCameraToObject(selected.group);
+    if (key === 'f') {
+      if (getSelectedInstance() || getSelectedAssemblyGroup() || state.selectedGroupIds.length) fitCurrentSelection();
       else fitCameraToAll();
     }
     if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
-      const selected = getSelectedInstance();
-      if (selected) fitCameraToObject(selected.group);
+      if (getSelectedInstance() || getSelectedAssemblyGroup() || state.selectedGroupIds.length) fitCurrentSelection();
     }
-    if (event.key.toLowerCase() === 'r') resetView();
+    if (key === 'r') resetView();
     if (event.key === 'PageUp') moveSelectedHeight(getHeightStep());
     if (event.key === 'PageDown') moveSelectedHeight(-getHeightStep());
-    if (event.key === 'Escape') selectInstance(null);
+    if (event.key === 'Escape') {
+      clearSelection();
+      refreshInstanceList();
+      updateSelectionUi();
+      updateStats();
+      updateSelectionBox();
+    }
     if (event.key === 'Delete' || event.key === 'Backspace') removeSelectedInstance();
   });
 }

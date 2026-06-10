@@ -43,7 +43,7 @@
             <span id="togglePlacedPanelIcon" class="panel-toggle-icon">[-]</span>
           </button>
           <div id="placedPanelBody" class="placed-panel-body">
-            <select id="instanceSelect" size="10"></select>
+            <select id="instanceSelect" size="10" multiple></select>
           </div>
         </section>
 
@@ -91,7 +91,9 @@
                 <li>Taille : double-clic ou glisser-déposer vers la scène</li>
                 <li>Forme : applique la variante à la pièce sélectionnée</li>
                 <li>Clic sur une pièce : sélection</li>
+                <li>Shift + clic : ajoute / retire une pièce de la sélection</li>
                 <li>Glisser une pièce : déplacement X/Y</li>
+                <li>Ctrl + G : créer groupe, Ctrl + B : dissoudre groupe</li>
                 <li>Hauteur : PageUp / PageDown</li>
                 <li>Caméra : fond + clic droit, molette pour zoom</li>
               </ul>
@@ -114,6 +116,16 @@
               <input id="heightStepInput" type="number" min="1" max="100" step="1" value="10" />
               <label for="heightInput">Hauteur</label>
               <input id="heightInput" type="number" step="1" value="0" />
+            </div>
+            <div class="button-grid compact assembly-selection-actions">
+              <button id="createGroupBtn" type="button">Créer groupe</button>
+              <button id="ungroupBtn" type="button">Dégrouper</button>
+              <button id="renameGroupBtn" type="button">Renommer groupe</button>
+              <button id="duplicatePieceBtn" type="button">Dupliquer</button>
+              <button id="removePieceBtn" type="button">Supprimer</button>
+              <button id="deselectBtn" type="button">Désélectionner</button>
+              <button id="fitSelectedBtn" type="button">Cadrer sélection</button>
+              <button id="fitAllBtn" type="button">Cadrer scène</button>
             </div>
           </section>
         </aside>

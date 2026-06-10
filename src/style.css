@@ -1194,6 +1194,10 @@ canvas.catalog-drop-target {
   min-height: 32px;
 }
 
+.assembly-selection-actions {
+  margin-top: 10px;
+}
+
 .stats-overlay {
   position: absolute;
   right: 14px;

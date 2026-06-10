@@ -87,6 +87,7 @@ symmetry_state     -> instance transform
 spec_profile       -> stats
 recipe             -> crafting data
 placed_piece        -> ship instance
+piece_group         -> logical container of placed pieces
 ```
 
 ## Fixed dimensions rule
@@ -124,6 +125,21 @@ Assembly scene rules:
 ```
 
 There must be no hidden final axis swap after geometry generation.
+
+## Assembly groups
+
+Assembly supports logical piece groups.
+
+Rules:
+
+```text
+- a group is not a merged mesh
+- a group stores origin + pivot + bbox + children local positions
+- grouped children remain individual piece instances for geometry/specs
+- external collision and snap must treat the group as one composite object
+- grouped children are hidden from the public "Pièces placées" list
+- persistence stores both ship.pieces and ship.groups
+```
 
 ## Shape engine
 
