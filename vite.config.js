@@ -50,6 +50,7 @@ function catalogFileApiPlugin() {
 }
 
 export default defineConfig({
+  base: '/spacecraft/',
   plugins: [catalogFileApiPlugin()],
   build: {
     rollupOptions: {

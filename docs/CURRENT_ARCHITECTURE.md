@@ -141,6 +141,54 @@ Rules:
 - persistence stores both ship.pieces and ship.groups
 ```
 
+## Interaction and movement modules
+
+Assembly interaction and movement are no longer expected to live as ad-hoc nested logic in `src/main.js`.
+
+```text
+src/assembly-drag-controller.js -> pointer capture, camera drag, marquee, keyboard routing
+src/assembly-movement.js        -> validated group/batch movement service
+```
+
+Rules:
+
+```text
+- right-click camera drag must not remain stuck after pointer release outside canvas
+- side-anchor snap remains prior to auto-Z
+- group/batch transforms must be validated before application
+- group/batch movement must stay atomic
+```
+
+## Validation modules
+
+Runtime contracts are validated before use.
+
+```text
+src/catalog-validator.js -> catalog top-level structure, ids, references, size coherence
+src/scene-validator.js   -> ship pieces/groups snapshot structure and references
+src/ship-creation.js     -> ShipCreation model + import/export validation bridge
+```
+
+Assembly startup must reject an invalid catalog. Ship import/open must reject an invalid scene snapshot.
+
+## History
+
+Undo/redo currently exists for movement only.
+
+```text
+src/history/command-stack.js
+src/history/commands/move-command.js
+```
+
+Rules:
+
+```text
+- command stack default limit = 10
+- failed/cancelled moves must not create history entries
+- redo is cleared only after a new committed command
+- non-movement actions are not yet part of the command stack
+```
+
 ## Shape engine
 
 The only active geometry generator is:
@@ -167,6 +215,12 @@ buildPrimitiveGeometry
 buildParametricGeometry
 buildFallbackBoxGeometry
 legacy mesh reconstruction logic
+```
+
+Forbidden in `src/editor.js`:
+
+```text
+duplicate final mesh builders for parametric/round/chamfer geometry
 ```
 
 ## Rendering modes
@@ -308,12 +362,16 @@ Error display:
 
 ```bash
 npm install
+npm run test
 npm run dev
 npm run build
 npm run build:assembly
+node scripts/validate-catalog.mjs public/data/4x3x1_catalog.json
 ```
 
 `npm run build:assembly` is the public distribution build and must not expose `editor.html`.
+
+Legacy Python tests are archived under `legacy_tests/python/` and are no longer the primary project signal.
 
 ## Current known priorities
 
