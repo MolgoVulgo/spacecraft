@@ -1,3 +1,5 @@
+import { validateSceneSnapshot } from './scene-validator.js';
+
 export const SHIP_CREATION_SCHEMA_VERSION = 1;
 
 function nowIso() {
@@ -104,6 +106,12 @@ export function validateShipCreation(payload, options = {}) {
     warnings.push('ship.computed_specs absent ou invalide; recalcul local requis.');
   }
 
+  const sceneValidation = validateSceneSnapshot(payload.ship, {
+    catalogPieceIds: options.catalogPieceIds,
+  });
+  errors.push(...sceneValidation.errors.map((issue) => `${issue.path}: ${issue.message}`));
+  warnings.push(...sceneValidation.warnings.map((issue) => `${issue.path}: ${issue.message}`));
+
   if (currentCatalogVersion && payload.catalog_version && String(payload.catalog_version) !== currentCatalogVersion) {
     warnings.push(`catalog_version differente: ${payload.catalog_version} (courant: ${currentCatalogVersion}).`);
   }
@@ -114,6 +122,7 @@ export function validateShipCreation(payload, options = {}) {
 export function prepareImportedShipCreation(payload, { catalog, currentCatalogVersion } = {}) {
   const validation = validateShipCreation(payload, {
     catalogVersion: currentCatalogVersion ?? getCatalogVersion(catalog),
+    catalogPieceIds: (catalog?.catalog_pieces ?? []).map((piece) => piece.id),
   });
   if (!validation.valid) return { ...validation, shipCreation: null };
 
