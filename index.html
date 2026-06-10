@@ -8,14 +8,23 @@
   <body data-app-mode="assembly" class="assembly-mode">
     <div id="app">
       <aside class="panel left-panel assembly-catalog-panel">
-        <header>
+        <header class="panel-header-with-action">
           <h1>SpaceCraft Assembly</h1>
+          <button
+            id="openUserConfigBtn"
+            class="icon-button"
+            type="button"
+            aria-label="Ouvrir la configuration utilisateur"
+            title="Configuration utilisateur"
+          >
+            <i class="ri-settings-line" aria-hidden="true"></i>
+          </button>
         </header>
 
         <section id="creationsPanel" class="control-block creations-panel">
           <button id="toggleCreationsPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="creationsPanelBody">
             <span class="panel-toggle-title">Mes créations</span>
-            <span id="toggleCreationsPanelIcon" class="panel-toggle-icon">[-]</span>
+            <span id="toggleCreationsPanelIcon" class="panel-toggle-icon"><i class="ri-collapse-vertical-fill" aria-hidden="true"></i></span>
           </button>
           <div id="creationsPanelBody" class="creations-panel-body">
             <input id="shipNameInput" type="text" value="Unnamed" placeholder="Nom de la création" />
@@ -39,7 +48,7 @@
         <section id="placedPanel" class="control-block placed-panel">
           <button id="togglePlacedPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="placedPanelBody">
             <span class="panel-toggle-title">Pièces placées</span>
-            <span id="togglePlacedPanelIcon" class="panel-toggle-icon">[-]</span>
+            <span id="togglePlacedPanelIcon" class="panel-toggle-icon"><i class="ri-collapse-vertical-fill" aria-hidden="true"></i></span>
           </button>
           <div id="placedPanelBody" class="placed-panel-body">
             <select id="instanceSelect" size="10" multiple></select>
@@ -49,7 +58,7 @@
         <section id="catalogPanel" class="control-block catalog-only-block assembly-catalog-controls">
           <button id="toggleCatalogPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="catalogPanelBody">
             <span class="panel-toggle-title">Famille / matériau</span>
-            <span id="toggleCatalogPanelIcon" class="panel-toggle-icon">[-]</span>
+            <span id="toggleCatalogPanelIcon" class="panel-toggle-icon"><i class="ri-collapse-vertical-fill" aria-hidden="true"></i></span>
           </button>
           <div id="catalogPanelBody" class="catalog-panel-body">
             <label for="catalogFamilyFilter">Famille / matériau</label>
@@ -89,7 +98,7 @@
           <section id="helpPanel" class="help-overlay">
             <button id="toggleHelpPanelBtn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="helpPanelBody">
               <span class="panel-toggle-title">Aide</span>
-              <span id="toggleHelpPanelIcon" class="panel-toggle-icon">[+]</span>
+              <span id="toggleHelpPanelIcon" class="panel-toggle-icon"><i class="ri-expand-vertical-fill" aria-hidden="true"></i></span>
             </button>
             <div id="helpPanelBody" class="help-overlay-body" hidden>
               <ul class="help-list">
@@ -98,7 +107,7 @@
                 <li>Clic gauche sur une pièce ou un groupe : sélectionner puis glisser pour déplacer</li>
                 <li>Clic gauche sur le fond : efface la sélection ; glisser sur le fond : rectangle de sélection</li>
                 <li>Shift + clic : ajoute ou retire une pièce ou un groupe de la sélection</li>
-                <li>Clic droit maintenu + glisser : déplacement caméra ; molette : zoom</li>
+                <li>Clic droit maintenu + glisser : navigation caméra selon la configuration ; molette : zoom</li>
                 <li>W/S : profondeur, A/D : horizontal, Q/E : vertical</li>
                 <li>Clavier AZERTY : Z/S profondeur, Q/D horizontal, A/E vertical</li>
                 <li>Les touches de déplacement déplacent la sélection, ou la scène si rien n’est sélectionné</li>
@@ -125,6 +134,125 @@
         </section>
 
       </main>
+    </div>
+
+    <div id="userConfigModal" class="modal-shell" aria-hidden="true">
+      <div class="modal-card user-config-modal-card" role="dialog" aria-modal="true" aria-labelledby="userConfigModalTitle">
+        <div class="modal-header">
+          <h2 id="userConfigModalTitle">Configuration utilisateur</h2>
+          <button id="closeUserConfigBtn" type="button">Fermer</button>
+        </div>
+        <div id="userConfigModalContext" class="modal-context">
+          Réglages locaux de l’interface Assembly.
+        </div>
+        <div class="user-config-page">
+          <section class="control-block user-config-section">
+            <h3 id="userConfigInterfaceTitle">Interface</h3>
+            <div class="user-config-grid">
+              <label for="userConfigThemeSelect">Thème</label>
+              <select id="userConfigThemeSelect">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+              <label for="userConfigLanguageSelect">Langue</label>
+              <select id="userConfigLanguageSelect">
+                <option value="fr">Français</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+          </section>
+          <section class="control-block user-config-section">
+            <h3 id="userConfigViewportTitle">Viewport</h3>
+            <div class="user-config-grid">
+              <label for="userConfigEdgeColorInput">Couleur des arêtes</label>
+              <input id="userConfigEdgeColorInput" type="color" value="#000000" />
+            </div>
+          </section>
+          <section class="control-block user-config-section">
+            <h3 id="userConfigCameraTitle">Caméra</h3>
+            <div class="user-config-grid">
+              <label for="userConfigRightMouseModeSelect">Comportement clic droit</label>
+              <select id="userConfigRightMouseModeSelect">
+                <option value="moveScene">Déplacer la scène</option>
+                <option value="orbitCamera">Orbiter la caméra</option>
+              </select>
+              <label for="userConfigRotationSensitivityInput">Sensibilité rotation</label>
+              <input id="userConfigRotationSensitivityInput" type="number" min="0.1" max="5" step="0.1" value="1" />
+              <label for="userConfigPanSensitivityInput">Sensibilité pan</label>
+              <input id="userConfigPanSensitivityInput" type="number" min="0.1" max="5" step="0.1" value="1" />
+              <label for="userConfigDepthSensitivityInput">Sensibilité profondeur</label>
+              <input id="userConfigDepthSensitivityInput" type="number" min="0.1" max="5" step="0.1" value="1" />
+              <label for="userConfigZoomSensitivityInput">Sensibilité zoom</label>
+              <input id="userConfigZoomSensitivityInput" type="number" min="0.1" max="5" step="0.1" value="1" />
+              <label class="toggle-row" for="userConfigInvertYToggle">
+                <span>Inverser axe Y</span>
+                <input id="userConfigInvertYToggle" type="checkbox" />
+              </label>
+              <label for="userConfigKeyboardLayoutSelect">Disposition clavier</label>
+              <select id="userConfigKeyboardLayoutSelect">
+                <option value="auto">Auto</option>
+                <option value="azerty">AZERTY</option>
+                <option value="qwerty">QWERTY</option>
+                <option value="custom">Custom</option>
+              </select>
+              <label for="userConfigKeyboardInputModeSelect">Mode entrée clavier</label>
+              <select id="userConfigKeyboardInputModeSelect">
+                <option value="physical">Physical</option>
+                <option value="character">Character</option>
+              </select>
+            </div>
+          </section>
+          <section class="control-block user-config-section">
+            <h3 id="userConfigSelectionTitle">Sélection</h3>
+            <div class="user-config-grid">
+              <label for="userConfigSelectionColorInput">Couleur de sélection</label>
+              <input id="userConfigSelectionColorInput" type="color" value="#2f80ff" />
+              <label for="userConfigCollisionColorInput">Couleur collision</label>
+              <input id="userConfigCollisionColorInput" type="color" value="#ff2d2d" />
+            </div>
+          </section>
+          <section class="control-block user-config-section">
+            <h3 id="userConfigEditorTitle">Éditeur</h3>
+            <div class="user-config-grid">
+              <label for="userConfigUndoLimitInput">Limite undo/redo</label>
+              <input id="userConfigUndoLimitInput" type="number" min="1" max="200" step="1" value="10" />
+              <label class="toggle-row" for="userConfigAutosaveEnabledToggle">
+                <span>Autosave activé</span>
+                <input id="userConfigAutosaveEnabledToggle" type="checkbox" />
+              </label>
+              <label for="userConfigAutosaveIntervalInput">Interval autosave (s)</label>
+              <input id="userConfigAutosaveIntervalInput" type="number" min="1" max="300" step="1" value="5" />
+            </div>
+          </section>
+          <section class="control-block user-config-section">
+            <h3 id="userConfigPathsTitle">Chemins</h3>
+            <div class="user-config-grid">
+              <label for="userConfigImportDirInput">Dossier import par défaut</label>
+              <input id="userConfigImportDirInput" type="text" value="" />
+              <label for="userConfigExportDirInput">Dossier export par défaut</label>
+              <input id="userConfigExportDirInput" type="text" value="" />
+            </div>
+          </section>
+          <section class="control-block user-config-section">
+            <h3 id="userConfigStorageTitle">Stockage local</h3>
+            <div class="user-config-grid">
+              <div class="user-config-static-label">Mode</div>
+              <div id="userConfigStorageMode" class="summary-box user-config-static-value">Chargement...</div>
+              <div class="user-config-static-label">Création active</div>
+              <div id="userConfigActiveShip" class="summary-box user-config-static-value">Chargement...</div>
+              <div class="user-config-static-label">Dernier save</div>
+              <div id="userConfigLastSave" class="summary-box user-config-static-value">Chargement...</div>
+              <div class="user-config-static-label">Info stockage</div>
+              <div id="userConfigStorageInfo" class="summary-box user-config-static-value">Chargement...</div>
+            </div>
+          </section>
+          <div class="user-config-actions">
+            <button id="resetUserConfigBtn" type="button">Par défaut</button>
+            <button id="cancelUserConfigBtn" type="button">Annuler</button>
+            <button id="saveUserConfigBtn" class="primary" type="button">Enregistrer</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

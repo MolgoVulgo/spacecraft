@@ -1,8 +1,32 @@
 :root {
+  --app-bg: #101114;
+  --panel-bg: #16181d;
+  --panel-border: #2b2e36;
+  --panel-input-bg: #20232b;
+  --panel-input-border: #333844;
+  --panel-text: #f2f2f2;
+  --panel-muted: #aab0bd;
+  --panel-label: #cbd0dc;
+  --summary-bg: #111318;
+  --viewport-bg: radial-gradient(circle at center, #232732 0%, #0b0c10 70%);
   color-scheme: dark;
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #101114;
-  color: #f2f2f2;
+  background: var(--app-bg);
+  color: var(--panel-text);
+}
+
+body[data-user-theme="light"] {
+  --app-bg: #e9edf4;
+  --panel-bg: #f7f9fc;
+  --panel-border: #cfd7e5;
+  --panel-input-bg: #ffffff;
+  --panel-input-border: #b6c0d1;
+  --panel-text: #18202c;
+  --panel-muted: #4f5d73;
+  --panel-label: #334055;
+  --summary-bg: #edf2f8;
+  --viewport-bg: radial-gradient(circle at center, #e5ebf3 0%, #cad4e3 70%);
+  color-scheme: light;
 }
 
 * {
@@ -24,21 +48,29 @@ body,
 }
 
 .panel {
-  background: #16181d;
+  background: var(--panel-bg);
   padding: 18px;
   overflow-y: auto;
 }
 
 .left-panel {
-  border-right: 1px solid #2b2e36;
+  border-right: 1px solid var(--panel-border);
+}
+
+.assembly-catalog-panel {
+  position: relative;
 }
 
 .right-panel {
-  border-left: 1px solid #2b2e36;
+  border-left: 1px solid var(--panel-border);
 }
 
 .panel header {
   margin-bottom: 20px;
+}
+
+.panel-header-with-action {
+  padding-right: 32px;
 }
 
 .panel h1,
@@ -54,14 +86,14 @@ body,
 
 .panel p {
   margin: 4px 0 0;
-  color: #aab0bd;
+  color: var(--panel-muted);
   font-size: 13px;
 }
 
 .control-block,
 .control-grid,
 .stats {
-  border-top: 1px solid #2b2e36;
+  border-top: 1px solid var(--panel-border);
   padding-top: 14px;
   margin-top: 14px;
 }
@@ -69,7 +101,7 @@ body,
 .control-block label,
 .control-grid label {
   display: block;
-  color: #cbd0dc;
+  color: var(--panel-label);
   font-size: 13px;
   margin-bottom: 8px;
 }
@@ -81,10 +113,10 @@ input[type="number"],
 input[type="text"],
 textarea {
   width: 100%;
-  border: 1px solid #333844;
+  border: 1px solid var(--panel-input-border);
   border-radius: 8px;
-  background: #20232b;
-  color: #f2f2f2;
+  background: var(--panel-input-bg);
+  color: var(--panel-text);
   min-height: 36px;
 }
 
@@ -121,6 +153,31 @@ button.active {
   border-color: #657087;
 }
 
+body[data-user-theme="light"] button:hover,
+body[data-user-theme="light"] button.active {
+  background: #dde6f2;
+  border-color: #9aa8be;
+}
+
+.icon-button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-button .ri-settings-line {
+  font-size: 16px;
+  line-height: 1;
+}
+
 button:disabled,
 select:disabled,
 input:disabled,
@@ -133,6 +190,11 @@ button.primary {
   background: #2c3340;
   border-color: #6d788f;
   font-weight: 650;
+}
+
+body[data-user-theme="light"] button.primary {
+  background: #dde6f2;
+  border-color: #8d9fba;
 }
 
 .control-grid {
@@ -178,8 +240,8 @@ input[type="checkbox"] {
 
 .summary-box,
 .editor-table {
-  background: #111318;
-  border: 1px solid #2b2e36;
+  background: var(--summary-bg);
+  border: 1px solid var(--panel-border);
   border-radius: 8px;
   padding: 10px;
 }
@@ -221,7 +283,7 @@ input[type="checkbox"] {
   position: relative;
   width: 100%;
   height: 100%;
-  background: radial-gradient(circle at center, #232732 0%, #0b0c10 70%);
+  background: var(--viewport-bg);
 }
 
 .navigation-cube-overlay {
@@ -885,8 +947,8 @@ input[type="checkbox"] {
   width: min(900px, 96vw);
   max-height: 88vh;
   overflow: auto;
-  background: #15171d;
-  border: 1px solid #373d49;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
   padding: 16px;
@@ -912,6 +974,71 @@ input[type="checkbox"] {
 
 .modal-context {
   margin-bottom: 12px;
+}
+
+.user-config-modal-card {
+  width: min(520px, 96vw);
+}
+
+.user-config-page {
+  display: grid;
+  gap: 0;
+}
+
+.user-config-section h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 650;
+  color: #f2f2f2;
+}
+
+.user-config-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 220px);
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.user-config-grid > label:not(.toggle-row) {
+  margin: 0;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  grid-column: 1 / -1;
+}
+
+.toggle-row input[type="checkbox"] {
+  margin-left: auto;
+}
+
+.user-config-static-label {
+  color: var(--panel-label);
+  font-size: 13px;
+}
+
+.user-config-static-value {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.user-config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.user-config-actions button {
+  width: auto;
+  min-width: 110px;
 }
 
 @media (max-width: 1350px) {
@@ -1177,6 +1304,13 @@ canvas.catalog-drop-target {
   margin-left: auto;
   text-align: right;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.panel-toggle-icon i {
+  font-size: 16px;
+  line-height: 1;
 }
 
 .panel-toggle:hover,

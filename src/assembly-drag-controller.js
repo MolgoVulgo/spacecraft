@@ -64,28 +64,44 @@ function hideMarqueeElement(element) {
   element.style.height = '0px';
 }
 
-function getLogicalKeyboardAction(event) {
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
-  const codeMap = {
-    KeyW: LOGICAL_ACTIONS.FORWARD_DEPTH,
-    KeyS: LOGICAL_ACTIONS.BACKWARD_DEPTH,
-    KeyA: LOGICAL_ACTIONS.LEFT_HORIZONTAL,
-    KeyD: LOGICAL_ACTIONS.RIGHT_HORIZONTAL,
-    KeyE: LOGICAL_ACTIONS.UP_VERTICAL,
-    KeyQ: LOGICAL_ACTIONS.DOWN_VERTICAL,
-  };
-  if (codeMap[event.code]) return codeMap[event.code];
-
-  const key = String(event.key ?? '').toLowerCase();
-  const keyMap = {
+function getKeyboardCharacterBindings(config) {
+  const layout = config?.keyboardLayout ?? 'auto';
+  if (layout === 'azerty') {
+    return {
+      z: LOGICAL_ACTIONS.FORWARD_DEPTH,
+      s: LOGICAL_ACTIONS.BACKWARD_DEPTH,
+      q: LOGICAL_ACTIONS.LEFT_HORIZONTAL,
+      d: LOGICAL_ACTIONS.RIGHT_HORIZONTAL,
+      e: LOGICAL_ACTIONS.UP_VERTICAL,
+      a: LOGICAL_ACTIONS.DOWN_VERTICAL,
+    };
+  }
+  return {
     w: LOGICAL_ACTIONS.FORWARD_DEPTH,
-    z: LOGICAL_ACTIONS.FORWARD_DEPTH,
     s: LOGICAL_ACTIONS.BACKWARD_DEPTH,
-    q: LOGICAL_ACTIONS.LEFT_HORIZONTAL,
+    a: LOGICAL_ACTIONS.LEFT_HORIZONTAL,
     d: LOGICAL_ACTIONS.RIGHT_HORIZONTAL,
     e: LOGICAL_ACTIONS.UP_VERTICAL,
-    a: LOGICAL_ACTIONS.DOWN_VERTICAL,
+    q: LOGICAL_ACTIONS.DOWN_VERTICAL,
   };
+}
+
+function getLogicalKeyboardAction(event, config = {}) {
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+
+  const bindings = config.bindings ?? {};
+  const codeMap = {
+    [bindings.moveForward ?? 'KeyW']: LOGICAL_ACTIONS.FORWARD_DEPTH,
+    [bindings.moveBackward ?? 'KeyS']: LOGICAL_ACTIONS.BACKWARD_DEPTH,
+    [bindings.moveLeft ?? 'KeyA']: LOGICAL_ACTIONS.LEFT_HORIZONTAL,
+    [bindings.moveRight ?? 'KeyD']: LOGICAL_ACTIONS.RIGHT_HORIZONTAL,
+    [bindings.moveUp ?? 'KeyE']: LOGICAL_ACTIONS.UP_VERTICAL,
+    [bindings.moveDown ?? 'KeyQ']: LOGICAL_ACTIONS.DOWN_VERTICAL,
+  };
+  if ((config.keyboardInputMode ?? 'physical') === 'physical' && codeMap[event.code]) return codeMap[event.code];
+
+  const key = String(event.key ?? '').toLowerCase();
+  const keyMap = getKeyboardCharacterBindings(config);
   return keyMap[key] ?? null;
 }
 
@@ -97,6 +113,18 @@ function logicalActionToDelta(action, step) {
   if (action === LOGICAL_ACTIONS.UP_VERTICAL) return new THREE.Vector3(0, 0, step);
   if (action === LOGICAL_ACTIONS.DOWN_VERTICAL) return new THREE.Vector3(0, 0, -step);
   return null;
+}
+
+function scaleSceneDelta(delta, action, config = {}) {
+  const next = delta.clone();
+  const panScale = Number.isFinite(config.panSensitivity) ? config.panSensitivity : 1;
+  const depthScale = Number.isFinite(config.depthSensitivity) ? config.depthSensitivity : 1;
+  if (action === LOGICAL_ACTIONS.FORWARD_DEPTH || action === LOGICAL_ACTIONS.BACKWARD_DEPTH) {
+    next.multiplyScalar(depthScale);
+    return next;
+  }
+  next.multiplyScalar(panScale);
+  return next;
 }
 
 export function createAssemblyInteractionController(options) {
@@ -115,11 +143,14 @@ export function createAssemblyInteractionController(options) {
     updateObjectDrag,
     endObjectDrag,
     beginCameraDrag,
+    updateCameraDrag,
     endCameraDrag,
     collectMarqueeSelection,
     moveSelectedByDelta,
     moveSceneByDelta,
     getMoveStep,
+    getKeyboardConfig = () => ({}),
+    getCameraOrbitTarget = () => null,
   } = options;
 
   const marqueeElement = createMarqueeElement(viewportStage);
@@ -127,7 +158,9 @@ export function createAssemblyInteractionController(options) {
     state: INTERACTION_STATES.IDLE,
     pointerId: null,
     startPoint: null,
+    lastPoint: null,
     currentRect: null,
+    cameraMode: null,
   };
 
   function setState(nextState) {
@@ -137,7 +170,9 @@ export function createAssemblyInteractionController(options) {
   function resetInteraction() {
     interaction.pointerId = null;
     interaction.startPoint = null;
+    interaction.lastPoint = null;
     interaction.currentRect = null;
+    interaction.cameraMode = null;
     hideMarqueeElement(marqueeElement);
     setState(INTERACTION_STATES.IDLE);
   }
@@ -200,9 +235,17 @@ export function createAssemblyInteractionController(options) {
   }
 
   function handleRightPointerDown(event) {
+    const cameraConfig = getKeyboardConfig();
+    const rightMouseMode = cameraConfig?.rightMouseMode ?? 'moveScene';
     interaction.pointerId = event.pointerId;
+    interaction.startPoint = getPointInContainer(event, viewportStage);
+    interaction.lastPoint = interaction.startPoint;
+    interaction.cameraMode = rightMouseMode;
     canvas.setPointerCapture?.(event.pointerId);
-    beginCameraDrag(event);
+    beginCameraDrag(event, {
+      mode: rightMouseMode === 'orbitCamera' ? 'orbit' : 'moveScene',
+      target: rightMouseMode === 'orbitCamera' ? getCameraOrbitTarget() : null,
+    });
     setState(INTERACTION_STATES.CAMERA_ROTATE_OR_PAN);
     return false;
   }
@@ -227,7 +270,24 @@ export function createAssemblyInteractionController(options) {
       updateMarquee(event);
       return true;
     }
-    if (interaction.state === INTERACTION_STATES.CAMERA_ROTATE_OR_PAN) return false;
+    if (interaction.state === INTERACTION_STATES.CAMERA_ROTATE_OR_PAN) {
+      if (event.pointerId !== interaction.pointerId) return false;
+      if (interaction.cameraMode === 'moveScene') {
+        const point = getPointInContainer(event, viewportStage);
+        const delta = {
+          x: point.x - interaction.lastPoint.x,
+          y: point.y - interaction.lastPoint.y,
+        };
+        interaction.lastPoint = point;
+        updateCameraDrag(event, {
+          mode: 'moveScene',
+          delta,
+          config: getKeyboardConfig(),
+        });
+        return true;
+      }
+      return false;
+    }
 
     const selectable = pickSelectable(event);
     setState(selectable ? INTERACTION_STATES.HOVER_PIECE_OR_GROUP : INTERACTION_STATES.IDLE);
@@ -269,7 +329,8 @@ export function createAssemblyInteractionController(options) {
   }
 
   function onKeyDown(event) {
-    const logicalAction = getLogicalKeyboardAction(event);
+    const keyboardConfig = getKeyboardConfig();
+    const logicalAction = getLogicalKeyboardAction(event, keyboardConfig);
     if (!logicalAction) return false;
     const delta = logicalActionToDelta(logicalAction, getMoveStep());
     if (!delta) return false;
@@ -278,7 +339,7 @@ export function createAssemblyInteractionController(options) {
       moveSelectedByDelta(delta);
     } else {
       setState(INTERACTION_STATES.KEYBOARD_MOVE_SCENE);
-      moveSceneByDelta(delta);
+      moveSceneByDelta(scaleSceneDelta(delta, logicalAction, keyboardConfig));
     }
     setState(INTERACTION_STATES.IDLE);
     return true;
