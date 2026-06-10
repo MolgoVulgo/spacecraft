@@ -30,8 +30,20 @@
               <button id="deleteShipBtn" type="button">Supprimer</button>
               <button id="exportShipBtn" type="button">Exporter</button>
               <button id="importShipBtn" type="button">Importer</button>
+              <button id="clearSceneBtn" type="button">Vider scène</button>
+              <button id="screenshotBtn" type="button">Capture PNG</button>
             </div>
             <input id="importShipInput" type="file" accept=".json,.spacecraft.json,application/json" hidden />
+          </div>
+        </section>
+
+        <section id="placedPanel" class="control-block placed-panel">
+          <button id="togglePlacedPanelBtn" class="panel-toggle" type="button" aria-expanded="true" aria-controls="placedPanelBody">
+            <span class="panel-toggle-title">Pièces placées</span>
+            <span id="togglePlacedPanelIcon" class="panel-toggle-icon">[-]</span>
+          </button>
+          <div id="placedPanelBody" class="placed-panel-body">
+            <select id="instanceSelect" size="10"></select>
           </div>
         </section>
 
@@ -69,10 +81,22 @@
           <div id="emptyHint" class="empty-hint">
             Scène vide. Double-clique une taille ou glisse une taille dans la scène.
           </div>
-          <div id="dimensionOverlay" class="dimension-overlay" hidden></div>
-          <div class="help">
-            Taille : double-clic ou drag-drop vers la scène · Forme : applique à la pièce sélectionnée · Clic pièce : sélection · Glisser une pièce : déplacement X/Y · Hauteur : boutons/PageUp/PageDown · Fond : caméra · Molette : zoom · Clic droit : caméra
-          </div>
+          <section id="helpPanel" class="help-overlay">
+            <button id="toggleHelpPanelBtn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="helpPanelBody">
+              <span class="panel-toggle-title">Aide</span>
+              <span id="toggleHelpPanelIcon" class="panel-toggle-icon">[+]</span>
+            </button>
+            <div id="helpPanelBody" class="help-overlay-body" hidden>
+              <ul class="help-list">
+                <li>Taille : double-clic ou glisser-déposer vers la scène</li>
+                <li>Forme : applique la variante à la pièce sélectionnée</li>
+                <li>Clic sur une pièce : sélection</li>
+                <li>Glisser une pièce : déplacement X/Y</li>
+                <li>Hauteur : PageUp / PageDown</li>
+                <li>Caméra : fond + clic droit, molette pour zoom</li>
+              </ul>
+            </div>
+          </section>
           <section class="stats-overlay" aria-label="État et statistiques">
             <div class="stats-overlay-title">Status</div>
             <section class="stats" id="stats"></section>
@@ -80,21 +104,6 @@
         </section>
 
         <aside class="assembly-bottom-bar">
-          <section class="bottom-card placed-card">
-            <label for="instanceSelect">Pièces placées</label>
-            <select id="instanceSelect" size="5"></select>
-            <div class="button-grid compact">
-              <button id="duplicatePieceBtn" type="button">Dupliquer</button>
-              <button id="removePieceBtn" type="button">Supprimer</button>
-              <button id="clearSceneBtn" type="button">Vider scène</button>
-              <button id="deselectBtn" type="button">Désélectionner</button>
-              <button id="fitSelectedBtn" type="button">Zoom sélection</button>
-              <button id="fitAllBtn" type="button">Zoom scène</button>
-              <button id="screenshotBtn" type="button">Capture PNG</button>
-              <button id="exportBlueprintBtn" type="button">Exporter création</button>
-            </div>
-          </section>
-
           <section class="bottom-card selection-card">
             <label>Sélection</label>
             <div id="catalogSummary" class="summary-box assembly-summary-box"></div>

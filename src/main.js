@@ -48,6 +48,7 @@ const state = {
   instances: [],
   selectedId: null,
   selectedGroupIds: [],
+  copiedSelection: null,
   selectedCatalogPieceId: null,
   nextInstanceId: 1,
   drag: null,
@@ -85,9 +86,9 @@ const dom = {
   moveDownBtn: document.querySelector('#moveDownBtn'),
   gridInput: document.querySelector('#gridInput'),
   showAnchorsInput: document.querySelector('#showAnchorsInput'),
+  statsOverlayTitle: document.querySelector('.stats-overlay-title'),
   stats: document.querySelector('#stats'),
   emptyHint: document.querySelector('#emptyHint'),
-  dimensionOverlay: document.querySelector('#dimensionOverlay'),
   fitSelectedBtn: document.querySelector('#fitSelectedBtn'),
   fitAllBtn: document.querySelector('#fitAllBtn'),
   screenshotBtn: document.querySelector('#screenshotBtn'),
@@ -99,6 +100,14 @@ const dom = {
   creationsPanelBody: document.querySelector('#creationsPanelBody'),
   toggleCreationsPanelBtn: document.querySelector('#toggleCreationsPanelBtn'),
   toggleCreationsPanelIcon: document.querySelector('#toggleCreationsPanelIcon'),
+  placedPanel: document.querySelector('#placedPanel'),
+  placedPanelBody: document.querySelector('#placedPanelBody'),
+  togglePlacedPanelBtn: document.querySelector('#togglePlacedPanelBtn'),
+  togglePlacedPanelIcon: document.querySelector('#togglePlacedPanelIcon'),
+  helpPanel: document.querySelector('#helpPanel'),
+  helpPanelBody: document.querySelector('#helpPanelBody'),
+  toggleHelpPanelBtn: document.querySelector('#toggleHelpPanelBtn'),
+  toggleHelpPanelIcon: document.querySelector('#toggleHelpPanelIcon'),
   newShipBtn: document.querySelector('#newShipBtn'),
   openShipBtn: document.querySelector('#openShipBtn'),
   renameShipBtn: document.querySelector('#renameShipBtn'),
@@ -667,7 +676,6 @@ function removeSelectedInstance() {
   updateEmptyHint();
   updateAttachmentStates();
   updateSelectionBox();
-  updateDimensionOverlay();
   markShipDirty();
 }
 
@@ -681,7 +689,6 @@ function clearScene(options = {}) {
   updateEmptyHint();
   updateAttachmentStates();
   updateSelectionBox();
-  updateDimensionOverlay();
   setMessage('');
   if (!options.skipPersist) markShipDirty();
 }
@@ -696,7 +703,6 @@ function selectInstance(id) {
   renderCatalogEditors();
   updateStats();
   updateSelectionBox();
-  updateDimensionOverlay();
 }
 
 function refreshInstanceList() {
@@ -714,9 +720,9 @@ function updateSelectionUi() {
   const selected = getSelectedInstance();
   const hasSelected = Boolean(selected);
   for (const element of selectedControls) element.disabled = !hasSelected;
-  dom.duplicatePieceBtn.disabled = !hasSelected;
-  dom.removePieceBtn.disabled = !hasSelected;
-  dom.deselectBtn.disabled = !hasSelected;
+  if (dom.duplicatePieceBtn) dom.duplicatePieceBtn.disabled = !hasSelected;
+  if (dom.removePieceBtn) dom.removePieceBtn.disabled = !hasSelected;
+  if (dom.deselectBtn) dom.deselectBtn.disabled = !hasSelected;
   if (dom.fitSelectedBtn) dom.fitSelectedBtn.disabled = !hasSelected;
 
   if (!selected) {
@@ -969,6 +975,7 @@ function updateStats() {
   );
 
   if (!selection.label) {
+    if (dom.statsOverlayTitle) dom.statsOverlayTitle.textContent = 'Status Vaisseau';
     dom.stats.textContent = [
       ...statsLines,
       state.lastMessage ? '' : null,
@@ -977,6 +984,7 @@ function updateStats() {
     return;
   }
 
+  if (dom.statsOverlayTitle) dom.statsOverlayTitle.textContent = 'Info pièce';
   dom.stats.textContent = [
     selection.label,
     '',
@@ -1009,11 +1017,65 @@ function fmt(value) {
   return Number(value).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
 }
 
+function getSelectedInstancesForCommands() {
+  const selectedGroupIds = Array.isArray(state.selectedGroupIds) ? state.selectedGroupIds.filter(Boolean) : [];
+  if (selectedGroupIds.length) {
+    return state.instances.filter((instance) => selectedGroupIds.includes(instance.id));
+  }
+  const selected = getSelectedInstance();
+  return selected ? [selected] : [];
+}
+
+function copySelectedInstances() {
+  const instances = getSelectedInstancesForCommands();
+  if (!instances.length) return false;
+
+  state.copiedSelection = instances.map((instance) => ({
+    catalogPieceId: instance.catalogPieceId,
+    symmetry: cloneSymmetry(instance.symmetry),
+    color: `#${instance.material.color.getHexString()}`,
+    position: instance.group.position.clone(),
+  }));
+  setMessage(`${instances.length} pièce(s) copiée(s).`);
+  return true;
+}
+
+function pasteCopiedInstances() {
+  const copiedSelection = Array.isArray(state.copiedSelection) ? state.copiedSelection : [];
+  if (!copiedSelection.length) return false;
+
+  const created = [];
+  const offset = new THREE.Vector3(40, 0, 0);
+  const basePosition = copiedSelection[0].position.clone();
+  for (const item of copiedSelection) {
+    const catalogPiece = getCatalogPieceById(item.catalogPieceId);
+    if (!catalogPiece) continue;
+
+    const relativePosition = item.position.clone().sub(basePosition);
+    const preferredPosition = basePosition.clone().add(offset).add(relativePosition);
+    const candidateBox = getReservationBoxForCatalogPiece(catalogPiece, preferredPosition);
+    const position = collidesWithOthers(candidateBox, null)
+      ? findAvailablePosition(catalogPiece)
+      : preferredPosition;
+
+    const clone = createInstance(catalogPiece, {
+      symmetry: item.symmetry,
+      color: item.color,
+      position,
+    });
+    if (clone) created.push(clone);
+  }
+
+  if (!created.length) return false;
+  fitCameraToObject(created[0].group, false);
+  markShipDirty();
+  setMessage(`${created.length} pièce(s) collée(s).`);
+  return true;
+}
+
 function updateEmptyHint() {
   dom.emptyHint.style.display = state.instances.length === 0 ? 'block' : 'none';
   dom.clearSceneBtn.disabled = state.instances.length === 0;
-  if (dom.fitAllBtn) dom.fitAllBtn.disabled = state.instances.length === 0;
-  if (dom.exportBlueprintBtn) dom.exportBlueprintBtn.disabled = state.instances.length === 0;
 }
 
 function updateSelectionBox() {
@@ -1037,7 +1099,6 @@ function fitCameraToObject(object, renderNow = true) {
   orbitControls.target.copy(center);
   positionCameraForCurrentView(center);
   orbitControls.update();
-  updateDimensionOverlay();
 
   if (renderNow) renderer.render(scene, camera);
 }
@@ -1102,26 +1163,6 @@ function setActiveViewButton(mode) {
   for (const [button, value] of [[null, 'top'], [null, 'front'], [null, LEGACY_ASSEMBLY_SIDE_VIEW_ID]]) {
     button?.classList.toggle('active', value === legacyMode);
   }
-}
-
-function updateDimensionOverlay() {
-  if (!dom.dimensionOverlay) return;
-  const selected = getSelectedInstance();
-  if (!selected) {
-    dom.dimensionOverlay.hidden = true;
-    dom.dimensionOverlay.textContent = '';
-    return;
-  }
-  const catalogPiece = getCatalogPieceById(selected.catalogPieceId);
-  const size = getSize(catalogPiece?.size_id);
-  const d = size?.dimensions;
-  if (!d) {
-    dom.dimensionOverlay.hidden = true;
-    dom.dimensionOverlay.textContent = '';
-    return;
-  }
-  dom.dimensionOverlay.hidden = false;
-  dom.dimensionOverlay.textContent = `Vue ${state.viewMode} · ${size.label ?? catalogPiece.size_id} · X largeur=${d.width} · Y profondeur/longueur=${d.length} · Z hauteur=${d.height}`;
 }
 
 function resize() {
@@ -1197,7 +1238,6 @@ assemblyViewController = createAssemblyViewController({
   updateAfterViewChange: (viewId) => {
     setActiveViewButton(viewId);
     assemblyNavigationCubeOverlay?.setActiveViewId(viewId);
-    updateDimensionOverlay();
   },
 });
 
@@ -3039,12 +3079,24 @@ function renderShipPersistenceState(persistenceState) {
   ].join('\n');
 }
 
+function setPanelCollapsed(panel, body, button, icon, collapsed) {
+  if (!panel || !button || !body) return;
+  panel.classList.toggle('is-collapsed', collapsed);
+  body.hidden = collapsed;
+  button.setAttribute('aria-expanded', String(!collapsed));
+  if (icon) icon.textContent = collapsed ? '[+]' : '[-]';
+}
+
 function setCreationsPanelCollapsed(collapsed) {
-  if (!dom.creationsPanel || !dom.toggleCreationsPanelBtn || !dom.creationsPanelBody) return;
-  dom.creationsPanel.classList.toggle('is-collapsed', collapsed);
-  dom.creationsPanelBody.hidden = collapsed;
-  dom.toggleCreationsPanelBtn.setAttribute('aria-expanded', String(!collapsed));
-  if (dom.toggleCreationsPanelIcon) dom.toggleCreationsPanelIcon.textContent = collapsed ? '[+]' : '[-]';
+  setPanelCollapsed(dom.creationsPanel, dom.creationsPanelBody, dom.toggleCreationsPanelBtn, dom.toggleCreationsPanelIcon, collapsed);
+}
+
+function setPlacedPanelCollapsed(collapsed) {
+  setPanelCollapsed(dom.placedPanel, dom.placedPanelBody, dom.togglePlacedPanelBtn, dom.togglePlacedPanelIcon, collapsed);
+}
+
+function setHelpPanelCollapsed(collapsed) {
+  setPanelCollapsed(dom.helpPanel, dom.helpPanelBody, dom.toggleHelpPanelBtn, dom.toggleHelpPanelIcon, collapsed);
 }
 
 function exportBlueprint() {
@@ -3088,6 +3140,8 @@ async function init() {
   updateEmptyHint();
   bindEvents();
   setCreationsPanelCollapsed(false);
+  setPlacedPanelCollapsed(false);
+  setHelpPanelCollapsed(true);
   await state.persistence.init();
   mountAssemblyNavigationCube();
   setAssemblyView('top', false);
@@ -3115,17 +3169,24 @@ function bindEvents() {
   }
 
   dom.instanceSelect.addEventListener('change', () => selectInstance(dom.instanceSelect.value));
-  dom.duplicatePieceBtn.addEventListener('click', duplicateSelectedInstance);
-  dom.removePieceBtn.addEventListener('click', removeSelectedInstance);
+  dom.duplicatePieceBtn?.addEventListener('click', duplicateSelectedInstance);
+  dom.removePieceBtn?.addEventListener('click', removeSelectedInstance);
   dom.clearSceneBtn.addEventListener('click', clearScene);
-  dom.deselectBtn.addEventListener('click', () => selectInstance(null));
-  dom.exportBlueprintBtn?.addEventListener('click', exportBlueprint);
+  dom.deselectBtn?.addEventListener('click', () => selectInstance(null));
   dom.shipList?.addEventListener('change', () => {
     dom.openShipBtn.disabled = !dom.shipList.value;
   });
   dom.toggleCreationsPanelBtn?.addEventListener('click', () => {
     const collapsed = dom.creationsPanel?.classList.contains('is-collapsed');
     setCreationsPanelCollapsed(!collapsed);
+  });
+  dom.togglePlacedPanelBtn?.addEventListener('click', () => {
+    const collapsed = dom.placedPanel?.classList.contains('is-collapsed');
+    setPlacedPanelCollapsed(!collapsed);
+  });
+  dom.toggleHelpPanelBtn?.addEventListener('click', () => {
+    const collapsed = dom.helpPanel?.classList.contains('is-collapsed');
+    setHelpPanelCollapsed(!collapsed);
   });
   dom.openShipBtn?.addEventListener('click', () => {
     if (!dom.shipList.value) return;
@@ -3196,8 +3257,6 @@ function bindEvents() {
     updateAnchorVisibility();
   });
 
-  dom.fitSelectedBtn?.addEventListener('click', () => fitCameraToObject(getSelectedInstance()?.group));
-  dom.fitAllBtn?.addEventListener('click', fitCameraToAll);
   dom.screenshotBtn?.addEventListener('click', takeScreenshot);
 
   document.addEventListener('pointerdown', onGlobalPointerDown, true);
@@ -3214,10 +3273,23 @@ function bindEvents() {
     const tagName = document.activeElement?.tagName?.toLowerCase();
     if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') return;
 
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+      if (copySelectedInstances()) event.preventDefault();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+      if (pasteCopiedInstances()) event.preventDefault();
+      return;
+    }
+
     if (event.key.toLowerCase() === 'f') {
       const selected = getSelectedInstance();
       if (selected) fitCameraToObject(selected.group);
       else fitCameraToAll();
+    }
+    if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
+      const selected = getSelectedInstance();
+      if (selected) fitCameraToObject(selected.group);
     }
     if (event.key.toLowerCase() === 'r') resetView();
     if (event.key === 'PageUp') moveSelectedHeight(getHeightStep());
