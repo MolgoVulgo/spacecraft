@@ -4,9 +4,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { buildShapeGeometry, catalogCellCenterVector, catalogPointVector, createCatalogReservationBox } from './shape-engine.js';
 import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { NAVIGATION_CUBE_VIEW_IDS, createNavigationCubeViewApi } from './navigation-cube.js';
+import { resolveRuntimePath } from './runtime-paths.js';
 import { createEditorViewController } from './view-controller.js';
 
-const CATALOG_URL = '/data/4x3x1_catalog.json';
+const CATALOG_URL = resolveRuntimePath('data/4x3x1_catalog.json');
+const CATALOG_WRITE_URL = '/api/catalog/write';
 const CELL_SCALE = 36;
 const ANCHOR_COLOR = 0xd82020;
 const CELL_COLOR = 0xd46a2c;
@@ -1725,7 +1727,7 @@ function downloadCatalogFile(filename = getCatalogFileName()) {
 }
 
 async function writeCatalogToProjectFile() {
-  const response = await fetch('/api/catalog/write', {
+  const response = await fetch(CATALOG_WRITE_URL, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(state.catalog),

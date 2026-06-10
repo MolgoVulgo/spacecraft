@@ -12,6 +12,7 @@ import { createAssemblyMovementController } from './assembly-movement.js';
 import { validateCatalogData } from './catalog-validator.js';
 import { createCommandStack } from './history/command-stack.js';
 import { createMoveCommand } from './history/commands/move-command.js';
+import { resolveRuntimePath } from './runtime-paths.js';
 import { buildShipCreation } from './ship-creation.js';
 import {
   LEGACY_ASSEMBLY_SIDE_VIEW_ID,
@@ -21,17 +22,17 @@ import {
   normalizeViewId,
 } from './view-controller.js';
 
-const CATALOG_URL = '/data/4x3x1_catalog.json';
+const CATALOG_URL = resolveRuntimePath('data/4x3x1_catalog.json');
 const DEFAULT_COLOR = '#d46a2c';
 const COLLISION_EPSILON = 1e-5;
 const DRAG_WORLD_LIMIT = 20000;
 const SIDE_SNAP_TANGENT_LIMIT_MULTIPLIER = 1.25;
 const SHAPE_BUTTON_COUNT = 14;
-const SHAPE_BUTTON_ICONS = Array.from({ length: SHAPE_BUTTON_COUNT }, (_, index) => `/ui/shape-buttons/button_${String(index + 1).padStart(2, '0')}.png`);
+const SHAPE_BUTTON_ICONS = Array.from({ length: SHAPE_BUTTON_COUNT }, (_, index) => resolveRuntimePath(`ui/shape-buttons/button_${String(index + 1).padStart(2, '0')}.png`));
 const SYMMETRY_BUTTON_ICONS = {
-  width: '/ui/shape-buttons/symmetry_width.png',
-  length: '/ui/shape-buttons/symmetry_length.png',
-  height: '/ui/shape-buttons/symmetry_height.png',
+  width: resolveRuntimePath('ui/shape-buttons/symmetry_width.png'),
+  length: resolveRuntimePath('ui/shape-buttons/symmetry_length.png'),
+  height: resolveRuntimePath('ui/shape-buttons/symmetry_height.png'),
 };
 const THEME_COLORS = {
   anchor: 0xd82020,

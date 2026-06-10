@@ -1,3 +1,5 @@
+import { resolveRuntimePath } from './runtime-paths.js';
+
 export const NAVIGATION_CUBE_VIEW_IDS = Object.freeze({
   top: 'top',
   bottom: 'bottom',
@@ -8,7 +10,7 @@ export const NAVIGATION_CUBE_VIEW_IDS = Object.freeze({
   home: 'home',
 });
 
-export const NAVIGATION_CUBE_RUNTIME_BASE = '/ui/navigation-cube';
+export const NAVIGATION_CUBE_RUNTIME_BASE = resolveRuntimePath('ui/navigation-cube');
 
 const NAVIGATION_CUBE_ITEMS_INTERNAL = Object.freeze([
   { id: NAVIGATION_CUBE_VIEW_IDS.top, label: 'TOP', action: 'top', kind: 'face' },
