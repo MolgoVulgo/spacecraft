@@ -8,10 +8,26 @@
   <body data-app-mode="editor" class="editor-only-mode">
     <div id="editorApp">
       <aside class="panel editor-left-panel">
-        <header>
+        <header class="panel-header-with-action editor-panel-header">
           <h1>SpaceCraft Editor</h1>
-          <p>Catalogue interne · modèles, variantes, ancres, specs, recettes</p>
+          <button
+            id="openEditorPreferencesBtn"
+            class="icon-button"
+            type="button"
+            aria-label="Ouvrir les préférences Editor"
+            title="Préférences Editor"
+          >
+            <i class="ri-expand-vertical-fill" aria-hidden="true"></i>
+          </button>
         </header>
+
+        <section class="control-block editor-catalog-actions-card">
+          <label>Catalogue</label>
+          <div class="button-grid compact editor-catalog-actions">
+            <button id="publishAssemblyCatalogBtn" type="button" class="primary">Publier vers Assembly</button>
+            <button id="exportCatalogBtn" type="button" class="primary">Exporter catalogue</button>
+          </div>
+        </section>
 
         <section class="control-block tree-block">
           <label>Famille / matériau → Taille → Variantes de forme</label>
@@ -22,39 +38,9 @@
       </aside>
 
       <main class="editor-main">
-        <section class="editor-topbar">
-          <div id="selectedBaseSummary" class="summary-box selected-summary"></div>
-          <div class="topbar-controls">
-            <label for="shapeVariantSelect">Pièce active</label>
-            <select id="shapeVariantSelect"></select>
-            <label for="catalogPieceSelect" hidden>Pièce catalogue interne</label>
-            <select id="catalogPieceSelect" hidden disabled></select>
-          </div>
-          <div class="topbar-actions">
-            <label class="inline-action-label" for="newVariantTypeSelect">Type variante</label>
-            <select id="newVariantTypeSelect" class="compact-select">
-              <option value="block">Bloc standard</option>
-              <option value="point_1">Point 1</option>
-              <option value="point_2">Pointe 2</option>
-              <option value="point_3">Pointe 3</option>
-            </select>
-            <button id="createVariantBtn" type="button" class="primary">Créer variante</button>
-            <button id="duplicateVariantBtn" type="button">Dupliquer variante</button>
-            <button id="deleteVariantBtn" type="button">Supprimer variante</button>
-            <button id="createCatalogPieceBtn" type="button" hidden>Créer entrée catalogue</button>
-            <button id="deleteCatalogPieceBtn" type="button" hidden>Supprimer entrée</button>
-            <button id="resetPreviewBtn" type="button">Vue reset</button>
-            <button id="fitPreviewBtn" type="button">Cadrer pièce</button>
-            <button id="saveDraftBtn" type="button">Enregistrer brouillon</button>
-            <button id="publishAssemblyCatalogBtn" type="button" class="primary">Publier vers Assembly</button>
-            <button id="controlShapeBtn" type="button">Contrôler variante</button>
-            <button id="validateShapeBtn" type="button" class="primary">Valider variante</button>
-            <button id="exportCatalogBtn" type="button" class="primary">Exporter catalogue</button>
-          </div>
-        </section>
-
         <section class="editor-viewport-wrap">
           <canvas id="editorViewer"></canvas>
+          <div id="selectedBaseSummary" class="summary-box selected-summary editor-summary-overlay"></div>
         </section>
 
         <section class="editor-workbench">
@@ -82,22 +68,6 @@
                   <option value="unknown">unknown</option>
                 </select>
               </div>
-            </section>
-
-            <section id="cellEditorCard" class="control-block editor-form">
-              <label>Cellules 1×1×1</label>
-              <div class="form-grid compact-form-grid">
-                <span>X</span><input id="cellXInput" type="number" min="0" step="1" value="0" />
-                <span>Y</span><input id="cellYInput" type="number" min="0" step="1" value="0" />
-                <span>Z</span><input id="cellZInput" type="number" min="0" step="1" value="0" />
-              </div>
-              <div class="button-grid compact">
-                <button id="addCellBtn" type="button">Ajouter cellule</button>
-                <button id="removeCellBtn" type="button">Supprimer cellule</button>
-                <button id="resetFullBoxBtn" type="button">Remplir modèle</button>
-                <button id="clearCellsBtn" type="button">Vider cellules</button>
-              </div>
-              <div id="cellSummary" class="summary-box"></div>
             </section>
 
             <section id="variantFaceEditorCard" class="control-block editor-form variant-face-panel">
@@ -130,14 +100,90 @@
 
           <div id="validationTab" class="tab-panel">
             <section class="control-block">
-              <label>Workflow sauvegarde / contrôle / validation</label>
-              <div class="editor-note">Aucun localStorage. “Enregistrer brouillon” télécharge un JSON draft. “Publier vers Assembly” écrit public/data/4x3x1_catalog.json via le serveur dev ; en build statique, le JSON est téléchargé pour remplacement manuel.</div>
+              <label>Publication / rapport catalogue</label>
+              <div class="editor-note">Aucun localStorage. “Publier vers Assembly” écrit public/data/4x3x1_catalog.json via le serveur dev ; en build statique, le JSON est téléchargé pour remplacement manuel.</div>
               <label>Rapport</label>
               <div id="validationReport" class="summary-box large-report"></div>
             </section>
           </div>
         </section>
       </main>
+    </div>
+
+
+    <div id="editorPreferencesModal" class="modal-shell" aria-hidden="true">
+      <div class="modal-card user-config-modal-card" role="dialog" aria-modal="true" aria-labelledby="editorPreferencesModalTitle">
+        <header class="modal-header">
+          <h2 id="editorPreferencesModalTitle">Préférences Editor</h2>
+          <button id="closeEditorPreferencesBtn" type="button">Fermer</button>
+        </header>
+        <div class="modal-context">Réglages locaux de l’interface Editor.</div>
+        <div class="user-config-page">
+          <section class="control-block user-config-section">
+            <h3>Liste des pièces</h3>
+            <div class="user-config-grid">
+              <label class="toggle-row" for="showDeleteReferenceButtonsToggle">
+                <span>Afficher les boutons suppr</span>
+                <input id="showDeleteReferenceButtonsToggle" type="checkbox" />
+              </label>
+            </div>
+          </section>
+          <div class="user-config-actions">
+            <button id="resetEditorPreferencesBtn" type="button">Par défaut</button>
+            <button id="cancelEditorPreferencesBtn" type="button">Annuler</button>
+            <button id="saveEditorPreferencesBtn" class="primary" type="button">Enregistrer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="baseReferenceModal" class="modal-shell" aria-hidden="true">
+      <div class="modal-card small-modal-card">
+        <header class="modal-header">
+          <h2>Créer une référence</h2>
+          <button id="closeBaseReferenceModalBtn" type="button">Fermer</button>
+        </header>
+        <div id="baseReferenceModalContext" class="summary-box modal-context"></div>
+        <section class="control-block editor-form">
+          <label>Dimensions</label>
+          <div class="form-grid">
+            <span>Longueur</span>
+            <input id="newBaseLengthInput" type="number" min="1" step="1" value="4" />
+            <span>Largeur</span>
+            <input id="newBaseWidthInput" type="number" min="1" step="1" value="3" />
+            <span>Hauteur</span>
+            <input id="newBaseHeightInput" type="number" min="1" step="1" value="1" />
+          </div>
+          <div class="button-grid compact single-action-grid">
+            <button id="createBaseReferenceBtn" type="button" class="primary">Créer</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
+
+    <div id="variantCreationModal" class="modal-shell" aria-hidden="true">
+      <div class="modal-card small-modal-card">
+        <header class="modal-header">
+          <h2>Créer une variante</h2>
+          <button id="closeVariantCreationModalBtn" type="button">Fermer</button>
+        </header>
+        <div id="variantCreationModalContext" class="summary-box modal-context"></div>
+        <section class="control-block editor-form">
+          <label>Référence cible</label>
+          <div class="form-grid">
+            <span>Famille</span>
+            <select id="newVariantFamilySelect"></select>
+            <span>Taille</span>
+            <select id="newVariantSizeSelect"></select>
+          </div>
+          <label class="sub-label">Variantes disponibles</label>
+          <div id="newVariantIconGrid" class="variant-icon-grid"></div>
+          <div class="button-grid compact single-action-grid">
+            <button id="createVariantFromModalBtn" type="button" class="primary">Créer</button>
+          </div>
+        </section>
+      </div>
     </div>
 
     <div id="specModal" class="modal-shell" aria-hidden="true">
@@ -149,7 +195,7 @@
         <div id="specModalContext" class="summary-box modal-context"></div>
         <section class="control-block editor-form">
           <label>Profil technique</label>
-          <select id="specProfileSelect"></select>
+          <div id="specProfileSummary" class="summary-box"></div>
           <div id="specEditor" class="editor-table"></div>
         </section>
       </div>

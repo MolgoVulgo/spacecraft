@@ -3060,7 +3060,11 @@ function renderCatalogPieceOptions() {
   }
 
   populateHiddenCatalogSelect(pieces);
-  renderShapePalette(filteredPieces);
+  // The shape palette edits the currently selected scene instance. It must be
+  // resolved against the complete catalog, not against the family/size filter
+  // currently highlighted in the left panel. Otherwise selecting another size
+  // hides the variants of the selected piece even though they exist in the catalog.
+  renderShapePalette(pieces);
 
   if (dom.catalogPieceSelect && state.selectedCatalogPieceId) dom.catalogPieceSelect.value = state.selectedCatalogPieceId;
 }

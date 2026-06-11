@@ -39,13 +39,15 @@ export function applySymmetryToGeometry(geometry, symmetry = {}) {
   if (!mirrors.length && !mirrors.width && !mirrors.height) return geometry;
 
   const result = geometry.clone();
+  result.computeBoundingBox();
+  const zMirrorSum = result.boundingBox.min.z + result.boundingBox.max.z;
   const position = result.getAttribute('position');
   for (let i = 0; i < position.count; i += 1) {
     // Shape-engine coordinates are assembly coordinates:
     // X = catalog width, Y = catalog length/depth, Z = catalog height.
     if (mirrors.length) position.setY(i, -position.getY(i));
     if (mirrors.width) position.setX(i, -position.getX(i));
-    if (mirrors.height) position.setZ(i, -position.getZ(i));
+    if (mirrors.height) position.setZ(i, zMirrorSum - position.getZ(i));
   }
   position.needsUpdate = true;
 
@@ -264,10 +266,26 @@ function getShapeCells(shape, dim) {
 }
 
 function createCellGeometry(cell, dim, scale, options = {}) {
-  const cellScale = options.shrinkCells ? scale * 0.98 : scale;
-  const [vertices, faces] = getBoxMesh({ length: 1, width: 1, height: 1 }, cellScale);
-  const center = catalogPoint(Number(cell.x) + 0.5, Number(cell.y) + 0.5, Number(cell.z) + 0.5, dim, scale);
-  return geometryFromIndexedMesh(vertices.map(([x, y, z]) => [x + center[0], y + center[1], z + center[2]]), faces);
+  const inset = options.shrinkCells ? 0.01 : 0;
+  const x0 = Number(cell.x) + inset;
+  const x1 = Number(cell.x) + 1 - inset;
+  const y0 = Number(cell.y) + inset;
+  const y1 = Number(cell.y) + 1 - inset;
+  const z0 = Number(cell.z) + inset;
+  const z1 = Number(cell.z) + 1 - inset;
+  const corners = [
+    [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+    [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+  ];
+  const faces = [
+    [0, 2, 1], [0, 3, 2],
+    [4, 5, 6], [4, 6, 7],
+    [0, 1, 5], [0, 5, 4],
+    [1, 2, 6], [1, 6, 5],
+    [2, 3, 7], [2, 7, 6],
+    [3, 0, 4], [3, 4, 7],
+  ];
+  return geometryFromIndexedMesh(corners.map(([x, y, z]) => catalogPoint(x, y, z, dim, scale)), faces);
 }
 
 function createOperationGeometry(op, dim, scale) {
@@ -291,7 +309,6 @@ function createCornerRoundGeometry(op, dim, scale) {
     curveSegments: 18,
     steps: 1,
   });
-  geom.translate(0, 0, -(Number(dim.height) || 1) * scale / 2);
   geom.computeVertexNormals();
   geom.computeBoundingBox();
   geom.computeBoundingSphere();
@@ -306,7 +323,6 @@ function createCornerChamferGeometry(op, dim, scale) {
     bevelEnabled: false,
     steps: 1,
   });
-  geom.translate(0, 0, -(Number(dim.height) || 1) * scale / 2);
   geom.computeVertexNormals();
   geom.computeBoundingBox();
   geom.computeBoundingSphere();
@@ -582,10 +598,10 @@ export function createCatalogReservationBox(sizeOrDimensions, scale = 100, posit
   const dim = sizeOrDimensions?.dimensions ?? sizeOrDimensions ?? { length: 1, width: 1, height: 1 };
   const halfX = (Number(dim.width) || 1) * scale / 2;
   const halfY = (Number(dim.length) || 1) * scale / 2;
-  const halfZ = (Number(dim.height) || 1) * scale / 2;
+  const height = (Number(dim.height) || 1) * scale;
   return new THREE.Box3(
-    new THREE.Vector3(-halfX, -halfY, -halfZ).add(position),
-    new THREE.Vector3(halfX, halfY, halfZ).add(position),
+    new THREE.Vector3(-halfX, -halfY, 0).add(position),
+    new THREE.Vector3(halfX, halfY, height).add(position),
   );
 }
 
@@ -599,5 +615,5 @@ function catalogPoint(xLength, yWidth, zHeight, dim, scale) {
 
 function worldLength(x, dim, scale) { return (x - (Number(dim.length) || 1) / 2) * scale; }
 function worldWidth(y, dim, scale) { return (y - (Number(dim.width) || 1) / 2) * scale; }
-function worldHeight(z, dim, scale) { return (z - (Number(dim.height) || 1) / 2) * scale; }
+function worldHeight(z, dim, scale) { return z * scale; }
 function worldZ(z, dim, scale) { return worldHeight(z, dim, scale); }

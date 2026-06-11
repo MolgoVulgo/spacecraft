@@ -1,4 +1,5 @@
 import './style.css';
+import 'remixicon/fonts/remixicon.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { buildShapeGeometry, catalogCellCenterVector, catalogPointVector, createCatalogReservationBox } from './shape-engine.js';
@@ -15,6 +16,17 @@ const CELL_COLOR = 0xd46a2c;
 const SELECTED_COLOR = 0xf0c75e;
 const OPERATION_ROUND_COLOR = 0xf0c75e;
 const OPERATION_CHAMFER_COLOR = 0x72c7ff;
+const EDITOR_CELL_CURSOR_KEYS = {
+  forward: new Set(['KeyW', 'w']),
+  backward: new Set(['KeyS', 's']),
+  left: new Set(['KeyA', 'a']),
+  right: new Set(['KeyD', 'd']),
+};
+const EDITOR_ANCHOR_TOGGLE_KEYS = new Set(['Space', ' ']);
+const EDITOR_USER_PREFERENCES_STORAGE_KEY = 'spacecraft.editor_user_preferences.v1';
+const DEFAULT_EDITOR_USER_PREFERENCES = {
+  showDeleteButtons: false,
+};
 
 const state = {
   catalog: null,
@@ -27,6 +39,9 @@ const state = {
   selectedOperationIndex: null,
   message: '',
   activeViewId: NAVIGATION_CUBE_VIEW_IDS.home,
+  editorUserPreferences: loadEditorUserPreferences(),
+  baseReferenceFamilyId: null,
+  variantModalSelection: null,
 };
 
 const dom = {
@@ -50,6 +65,13 @@ const dom = {
   stats: document.querySelector('#editorStats'),
   canvas: document.querySelector('#editorViewer'),
   viewportWrap: document.querySelector('.editor-viewport-wrap'),
+  openEditorUserConfigBtn: document.querySelector('#openEditorUserConfigBtn'),
+  editorUserConfigModal: document.querySelector('#editorUserConfigModal'),
+  closeEditorUserConfigBtn: document.querySelector('#closeEditorUserConfigBtn'),
+  cancelEditorUserConfigBtn: document.querySelector('#cancelEditorUserConfigBtn'),
+  saveEditorUserConfigBtn: document.querySelector('#saveEditorUserConfigBtn'),
+  resetEditorUserConfigBtn: document.querySelector('#resetEditorUserConfigBtn'),
+  editorShowDeleteButtonsToggle: document.querySelector('#editorShowDeleteButtonsToggle'),
 
   shapeIdInput: document.querySelector('#shapeIdInput'),
   shapeLabelInput: document.querySelector('#shapeLabelInput'),
@@ -62,9 +84,7 @@ const dom = {
   removeCellBtn: document.querySelector('#removeCellBtn'),
   resetFullBoxBtn: document.querySelector('#resetFullBoxBtn'),
   clearCellsBtn: document.querySelector('#clearCellsBtn'),
-  cellEditorCard: document.querySelector('#cellEditorCard'),
   cellSummary: document.querySelector('#cellSummary'),
-  variantFaceEditorCard: document.querySelector('#variantFaceEditorCard'),
   variantFaceSummary: document.querySelector('#variantFaceSummary'),
   roundFaceBtn: document.querySelector('#roundFaceBtn'),
   chamferFaceBtn: document.querySelector('#chamferFaceBtn'),
@@ -86,12 +106,223 @@ const dom = {
   closeRecipeModalBtn: document.querySelector('#closeRecipeModalBtn'),
   recipeSelect: document.querySelector('#recipeSelect'),
   recipeEditor: document.querySelector('#recipeEditor'),
+  baseReferenceModal: document.querySelector('#baseReferenceModal'),
+  baseReferenceModalContext: document.querySelector('#baseReferenceModalContext'),
+  closeBaseReferenceModalBtn: document.querySelector('#closeBaseReferenceModalBtn'),
+  newBaseLengthInput: document.querySelector('#newBaseLengthInput'),
+  newBaseWidthInput: document.querySelector('#newBaseWidthInput'),
+  newBaseHeightInput: document.querySelector('#newBaseHeightInput'),
+  createBaseReferenceBtn: document.querySelector('#createBaseReferenceBtn'),
+  variantCreationModal: document.querySelector('#variantCreationModal'),
+  variantCreationModalContext: document.querySelector('#variantCreationModalContext'),
+  closeVariantCreationModalBtn: document.querySelector('#closeVariantCreationModalBtn'),
+  newVariantFamilySelect: document.querySelector('#newVariantFamilySelect'),
+  newVariantSizeSelect: document.querySelector('#newVariantSizeSelect'),
+  newVariantIconGrid: document.querySelector('#newVariantIconGrid'),
+  createVariantFromModalBtn: document.querySelector('#createVariantFromModalBtn'),
   validationReport: document.querySelector('#validationReport'),
 };
+
+function bindElement(element, type, handler, options) {
+  element?.addEventListener(type, handler, options);
+}
+
+function setElementText(element, text) {
+  if (element) element.textContent = text;
+}
+
+function clearElement(element) {
+  if (element) element.innerHTML = '';
+}
+
+function appendElement(element, child) {
+  if (element) element.append(child);
+}
+
+function loadEditorUserPreferences() {
+  try {
+    const raw = globalThis.localStorage?.getItem(EDITOR_USER_PREFERENCES_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_EDITOR_USER_PREFERENCES };
+    const parsed = JSON.parse(raw);
+    return {
+      showDeleteButtons: Boolean(parsed?.showDeleteButtons),
+    };
+  } catch {
+    return { ...DEFAULT_EDITOR_USER_PREFERENCES };
+  }
+}
+
+function saveEditorUserPreferences(preferences) {
+  const normalized = {
+    showDeleteButtons: Boolean(preferences?.showDeleteButtons),
+  };
+  globalThis.localStorage?.setItem(EDITOR_USER_PREFERENCES_STORAGE_KEY, JSON.stringify(normalized));
+  state.editorUserPreferences = normalized;
+  return normalized;
+}
+
+function queryFirst(selectors) {
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    if (element) return element;
+  }
+  return null;
+}
+
+function refreshEditorUserConfigDomRefs() {
+  dom.openEditorUserConfigBtn = queryFirst(['#openEditorUserConfigBtn', '#openEditorPreferencesBtn']);
+  dom.editorUserConfigModal = queryFirst(['#editorUserConfigModal', '#editorPreferencesModal']);
+  dom.closeEditorUserConfigBtn = queryFirst(['#closeEditorUserConfigBtn', '#closeEditorPreferencesBtn']);
+  dom.cancelEditorUserConfigBtn = queryFirst(['#cancelEditorUserConfigBtn', '#cancelEditorPreferencesBtn']);
+  dom.saveEditorUserConfigBtn = queryFirst(['#saveEditorUserConfigBtn', '#saveEditorPreferencesBtn']);
+  dom.resetEditorUserConfigBtn = queryFirst(['#resetEditorUserConfigBtn', '#resetEditorPreferencesBtn']);
+  dom.editorShowDeleteButtonsToggle = queryFirst(['#editorShowDeleteButtonsToggle', '#showDeleteReferenceButtonsToggle']);
+}
+
+function normalizeEditorUserConfigMarkup() {
+  const idMap = new Map([
+    ['openEditorPreferencesBtn', 'openEditorUserConfigBtn'],
+    ['editorPreferencesModal', 'editorUserConfigModal'],
+    ['closeEditorPreferencesBtn', 'closeEditorUserConfigBtn'],
+    ['cancelEditorPreferencesBtn', 'cancelEditorUserConfigBtn'],
+    ['saveEditorPreferencesBtn', 'saveEditorUserConfigBtn'],
+    ['resetEditorPreferencesBtn', 'resetEditorUserConfigBtn'],
+    ['showDeleteReferenceButtonsToggle', 'editorShowDeleteButtonsToggle'],
+  ]);
+
+  for (const [legacyId, nextId] of idMap.entries()) {
+    const element = document.getElementById(legacyId);
+    if (element && !document.getElementById(nextId)) element.id = nextId;
+  }
+}
+
+function ensureEditorUserConfigUi() {
+  normalizeEditorUserConfigMarkup();
+  const header = document.querySelector('#editorApp .editor-left-panel > header, #editorApp aside header, .editor-left-panel header');
+  if (header && !document.querySelector('#openEditorUserConfigBtn')) {
+    header.classList.add('panel-header-with-action');
+    if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
+    const button = document.createElement('button');
+    button.id = 'openEditorUserConfigBtn';
+    button.type = 'button';
+    button.className = 'icon-button editor-user-config-button';
+    button.title = 'Préférences utilisateur';
+    button.setAttribute('aria-label', 'Préférences utilisateur');
+    button.innerHTML = '<i class="ri-expand-vertical-fill" aria-hidden="true"></i>';
+    header.append(button);
+  }
+
+  if (!document.querySelector('#editorUserConfigModal')) {
+    const modal = document.createElement('div');
+    modal.id = 'editorUserConfigModal';
+    modal.className = 'modal-shell';
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = `
+      <div class="modal-card user-config-modal-card" role="dialog" aria-modal="true" aria-labelledby="editorUserConfigModalTitle">
+        <header class="modal-header">
+          <h2 id="editorUserConfigModalTitle">Préférences Editor</h2>
+          <button id="closeEditorUserConfigBtn" type="button">Fermer</button>
+        </header>
+        <div class="summary-box modal-context">Préférences locales de l’éditeur.</div>
+        <section class="control-block user-config-page">
+          <div class="user-config-section">
+            <h3>Interface</h3>
+            <div class="user-config-grid">
+              <label class="toggle-row" for="editorShowDeleteButtonsToggle">
+                <span>Afficher les boutons suppr</span>
+                <input id="editorShowDeleteButtonsToggle" type="checkbox" />
+              </label>
+            </div>
+          </div>
+          <div class="user-config-actions">
+            <button id="resetEditorUserConfigBtn" type="button">Défauts</button>
+            <button id="cancelEditorUserConfigBtn" type="button">Annuler</button>
+            <button id="saveEditorUserConfigBtn" type="button" class="primary">Enregistrer</button>
+          </div>
+        </section>
+      </div>`;
+    document.body.append(modal);
+  }
+
+  refreshEditorUserConfigDomRefs();
+}
+
+function fillEditorUserConfigForm(preferences = state.editorUserPreferences) {
+  if (dom.editorShowDeleteButtonsToggle) {
+    dom.editorShowDeleteButtonsToggle.checked = Boolean(preferences?.showDeleteButtons);
+  }
+}
+
+function applyEditorUserPreferences(preferences = state.editorUserPreferences) {
+  const showDeleteButtons = Boolean(preferences?.showDeleteButtons);
+  document.body.dataset.editorShowDeleteButtons = showDeleteButtons ? 'true' : 'false';
+  const deleteControls = document.querySelectorAll([
+    '#deleteVariantBtn',
+    '#deleteCatalogPieceBtn',
+    '#removeCellBtn',
+    '#clearCellsBtn',
+    '#deleteFaceOperationBtn',
+    '#deleteAnchorBtn',
+    '.editor-delete-action',
+    '.editor-delete-button',
+    '.editor-variant-delete-btn',
+    '.delete-reference-btn',
+    '.base-model-delete-btn',
+    '[data-editor-delete-action]',
+    '[data-delete-action]',
+  ].join(','));
+  for (const control of deleteControls) {
+    control.hidden = !showDeleteButtons;
+    control.setAttribute('aria-hidden', String(!showDeleteButtons));
+    control.tabIndex = showDeleteButtons ? 0 : -1;
+  }
+}
+
+function setEditorUserConfigModalOpen(open) {
+  if (!dom.editorUserConfigModal) return;
+  if (open) fillEditorUserConfigForm(state.editorUserPreferences);
+  dom.editorUserConfigModal.classList.toggle('open', open);
+  dom.editorUserConfigModal.setAttribute('aria-hidden', String(!open));
+  if (open) dom.editorShowDeleteButtonsToggle?.focus();
+}
+
+function resetEditorUserConfigForm() {
+  fillEditorUserConfigForm(DEFAULT_EDITOR_USER_PREFERENCES);
+}
+
+function persistEditorDeleteButtonPreference() {
+  const nextPreferences = saveEditorUserPreferences({
+    showDeleteButtons: dom.editorShowDeleteButtonsToggle?.checked,
+  });
+  applyEditorUserPreferences(nextPreferences);
+  return nextPreferences;
+}
+
+function saveEditorUserConfigForm() {
+  persistEditorDeleteButtonPreference();
+  setEditorUserConfigModalOpen(false);
+}
+
+function setCellInputValues(cell) {
+  if (!cell) return;
+  if (dom.cellXInput) dom.cellXInput.value = cell.x;
+  if (dom.cellYInput) dom.cellYInput.value = cell.y;
+  if (dom.cellZInput) dom.cellZInput.value = cell.z;
+}
+
+function readCellInputValues() {
+  const fallback = state.selectedFace?.cell ?? { x: 0, y: 0, z: 0 };
+  return {
+    x: Math.floor(Number(dom.cellXInput?.value ?? fallback.x)),
+    y: Math.floor(Number(dom.cellYInput?.value ?? fallback.y)),
+    z: Math.floor(Number(dom.cellZInput?.value ?? fallback.z)),
+  };
+}
 
 const renderer = new THREE.WebGLRenderer({ canvas: dom.canvas, antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.domElement.tabIndex = 0;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101114);
@@ -192,22 +423,6 @@ function getPiece(id) { return state.repo?.pieces.get(id) ?? null; }
 function selectedShape() { return getShape(state.selectedShapeId); }
 function selectedPiece() { return getPiece(state.selectedCatalogPieceId); }
 
-function isBaseShape(shape = selectedShape()) {
-  if (!shape) return false;
-  return shape.shape_family === 'base_block' || Number(shape.variant_index) === 0 || String(shape.id ?? '').endsWith('_base');
-}
-
-function isEditableVariantShape(shape = selectedShape()) {
-  return Boolean(shape && !isBaseShape(shape));
-}
-
-function syncShapeEditorCards() {
-  const showCellEditor = isBaseShape();
-  const showVariantFaceEditor = isEditableVariantShape();
-  if (dom.cellEditorCard) dom.cellEditorCard.hidden = !showCellEditor;
-  if (dom.variantFaceEditorCard) dom.variantFaceEditorCard.hidden = !showVariantFaceEditor;
-}
-
 function slugifyId(value) {
   return String(value ?? '')
     .trim()
@@ -239,8 +454,43 @@ function getBaseGroups() {
   ];
 }
 
+function getBaseGroupByFamilyId(familyId) {
+  return getBaseGroups().find((group) => group.family_id === familyId) ?? null;
+}
+
+function getFamilyLabel(familyId) {
+  return getBaseGroupByFamilyId(familyId)?.piece_label_fr ?? getFamily(familyId)?.label_fr ?? familyId;
+}
+
+function makeSizeId(length, width, height) {
+  return `${length}x${width}x${height}`;
+}
+
+function compareSizeIds(a, b) {
+  const parse = (value) => String(value).split('x').map((part) => Number(part) || 0);
+  const [al, aw, ah] = parse(a);
+  const [bl, bw, bh] = parse(b);
+  return (al - bl) || (aw - bw) || (ah - bh) || String(a).localeCompare(String(b));
+}
+
+function ensureBaseGroupSize(familyId, sizeId) {
+  const group = getBaseGroupByFamilyId(familyId);
+  if (!group) return;
+  group.sizes ??= [];
+  if (!group.sizes.includes(sizeId)) {
+    group.sizes.push(sizeId);
+    group.sizes.sort(compareSizeIds);
+  }
+}
+
+function removeBaseGroupSize(familyId, sizeId) {
+  const group = getBaseGroupByFamilyId(familyId);
+  if (!group?.sizes) return;
+  group.sizes = group.sizes.filter((item) => item !== sizeId);
+}
+
 function renderBaseModels() {
-  dom.baseModelTree.innerHTML = '';
+  clearElement(dom.baseModelTree);
   const groups = getBaseGroups();
   for (const group of groups) {
     const familyDetails = document.createElement('details');
@@ -248,7 +498,21 @@ function renderBaseModels() {
     familyDetails.open = state.selectedBase?.family_id === group.family_id || group === groups[0];
 
     const familySummary = document.createElement('summary');
-    familySummary.textContent = group.label_fr;
+    familySummary.className = 'tree-family-summary';
+    const familyTitle = document.createElement('span');
+    familyTitle.className = 'tree-family-title';
+    familyTitle.textContent = group.label_fr;
+    const addBaseBtn = document.createElement('button');
+    addBaseBtn.type = 'button';
+    addBaseBtn.className = 'tree-family-add-action';
+    addBaseBtn.textContent = '[+]';
+    addBaseBtn.title = `Créer une référence dans ${group.label_fr}`;
+    addBaseBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openBaseReferenceModal(group.family_id);
+    });
+    familySummary.append(familyTitle, addBaseBtn);
     familyDetails.append(familySummary);
 
     for (const sizeId of group.sizes) {
@@ -294,40 +558,71 @@ function renderBaseModels() {
         openRecipeModal();
       });
 
-      sizeSummary.append(selectBtn, specBtn, recipeBtn);
+      const createVariantBtn = document.createElement('button');
+      createVariantBtn.type = 'button';
+      createVariantBtn.className = 'tree-mini-action';
+      createVariantBtn.title = 'Créer une variante';
+      createVariantBtn.textContent = '+ variant';
+      createVariantBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openVariantCreationModal(group.family_id, sizeId);
+      });
+
+      const deleteRootBtn = document.createElement('button');
+      deleteRootBtn.type = 'button';
+      deleteRootBtn.className = 'tree-mini-action danger editor-delete-button editor-root-delete-btn';
+      deleteRootBtn.textContent = 'Suppr';
+      deleteRootBtn.title = `Supprimer l'entrée catalogue ${group.piece_label_fr} ${sizeId}`;
+      deleteRootBtn.dataset.editorDeleteAction = 'delete-root-piece';
+      deleteRootBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteBaseReferenceByFamilyAndSize(group.family_id, sizeId);
+      });
+
+      sizeSummary.append(selectBtn, specBtn, recipeBtn, createVariantBtn, deleteRootBtn);
       sizeDetails.append(sizeSummary);
 
       const variants = document.createElement('div');
       variants.className = 'tree-variants';
-      const pieces = (state.catalog.catalog_pieces ?? [])
-        .filter((piece) => piece.family_id === group.family_id && piece.size_id === sizeId)
-        .sort((a, b) => {
-          const shapeA = getShape(a.shape_variant_id);
-          const shapeB = getShape(b.shape_variant_id);
-          return (Number(shapeA?.variant_index) || 0) - (Number(shapeB?.variant_index) || 0)
-            || String(a.label_fr ?? a.id).localeCompare(String(b.label_fr ?? b.id), 'fr');
-        });
-      for (const piece of pieces) {
-        const shape = getShape(piece.shape_variant_id);
-        if (!shape) continue;
+      for (const shape of findShapesForBase(group.family_id, sizeId)) {
+        const variantRow = document.createElement('div');
+        variantRow.className = 'tree-variant-row';
+
         const variant = document.createElement('button');
         variant.type = 'button';
         variant.className = 'tree-variant-button';
-        if (isBaseActive && piece.id === state.selectedCatalogPieceId) variant.classList.add('active');
-        variant.textContent = `↳ ${piece.label_fr ?? shape.label ?? piece.id}`;
+        if (isBaseActive && shape.id === state.selectedShapeId) variant.classList.add('active');
+        variant.textContent = `↳ ${shape.label ?? shape.id}`;
         variant.addEventListener('click', () => {
           selectBaseModel(group, sizeId, { keepView: true });
-          state.selectedCatalogPieceId = piece.id;
           state.selectedShapeId = shape.id;
+          const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === shape.id);
+          if (piece) state.selectedCatalogPieceId = piece.id;
           state.selectedFace = null;
           renderAll();
         });
-        variants.append(variant);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'tree-mini-action danger editor-delete-button editor-variant-delete-btn';
+        deleteBtn.textContent = 'Suppr';
+        deleteBtn.title = `Supprimer la variante ${shape.label ?? shape.id}`;
+        deleteBtn.dataset.editorDeleteAction = 'delete-variant';
+        deleteBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          deleteVariantById(shape.id);
+        });
+
+        variantRow.append(variant, deleteBtn);
+        variants.append(variantRow);
       }
       sizeDetails.append(variants);
       familyDetails.append(sizeDetails);
     }
-    dom.baseModelTree.append(familyDetails);
+    appendElement(dom.baseModelTree, familyDetails);
   }
 }
 
@@ -343,7 +638,7 @@ function selectBaseModel(group, sizeId, options = {}) {
   const basePiece = findCatalogPiecesForBase()[0] ?? null;
   if (basePiece) state.selectedCatalogPieceId = basePiece.id;
 
-  const shape = basePiece ? getShape(basePiece.shape_variant_id) : findShapesForSize(sizeId)[0];
+  const shape = basePiece ? getShape(basePiece.shape_variant_id) : findShapesForBase(group.family_id, sizeId)[0];
   state.selectedShapeId = shape?.id ?? null;
   state.selectedFace = null;
 
@@ -357,127 +652,92 @@ function findShapesForSize(sizeId = state.selectedBase?.size_id) {
     .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0) || a.id.localeCompare(b.id));
 }
 
-function uniqueById(items = []) {
-  const seen = new Set();
-  const result = [];
-  for (const item of items) {
-    if (!item?.id || seen.has(item.id)) continue;
-    seen.add(item.id);
-    result.push(item);
-  }
-  return result;
-}
-
-function findShapesForCurrentBase() {
-  if (!state.selectedBase) return findShapesForSize();
-  const shapes = findCatalogPiecesForBase()
-    .map((piece) => getShape(piece.shape_variant_id))
-    .filter(Boolean);
-  const selected = selectedShape();
-  if (selected?.size_id === state.selectedBase.size_id && !shapes.some((shape) => shape.id === selected.id)) {
-    shapes.push(selected);
-  }
-  return uniqueById(shapes)
-    .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0) || a.id.localeCompare(b.id));
+function shapeBelongsToBase(shape, familyId, sizeId) {
+  if (!shape || !familyId || !sizeId || shape.size_id !== sizeId) return false;
+  const basedOn = shape.metadata?.based_on;
+  if (basedOn === `${familyId}:${sizeId}`) return true;
+  return String(shape.id ?? '').startsWith(`shape_${familyId}_${sizeId}_`);
 }
 
 function findCatalogPiecesForBase() {
   if (!state.selectedBase) return [];
   return (state.catalog.catalog_pieces ?? [])
     .filter((piece) => piece.family_id === state.selectedBase.family_id && piece.size_id === state.selectedBase.size_id)
-    .sort((a, b) => {
-      const shapeA = getShape(a.shape_variant_id);
-      const shapeB = getShape(b.shape_variant_id);
-      return (Number(shapeA?.variant_index) || 0) - (Number(shapeB?.variant_index) || 0)
-        || String(a.label_fr ?? a.id).localeCompare(String(b.label_fr ?? b.id), 'fr');
-    });
+    .sort((a, b) => a.label_fr.localeCompare(b.label_fr, 'fr'));
 }
 
-function findCatalogPiecesForShape(shapeId = state.selectedShapeId) {
-  if (!shapeId) return [];
+function findShapesForBase(familyId = state.selectedBase?.family_id, sizeId = state.selectedBase?.size_id) {
+  if (!familyId || !sizeId) return [];
+  const linkedIds = new Set(
+    (state.catalog.catalog_pieces ?? [])
+      .filter((piece) => piece.family_id === familyId && piece.size_id === sizeId)
+      .map((piece) => piece.shape_variant_id),
+  );
+  return (state.catalog.shape_variants ?? [])
+    .filter((shape) => linkedIds.has(shape.id) || shapeBelongsToBase(shape, familyId, sizeId))
+    .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0) || a.id.localeCompare(b.id));
+}
+
+function getCatalogPiecesForBase(familyId, sizeId) {
   return (state.catalog.catalog_pieces ?? [])
-    .filter((piece) => piece.shape_variant_id === shapeId)
-    .sort((a, b) => String(a.label_fr ?? a.id).localeCompare(String(b.label_fr ?? b.id), 'fr'));
+    .filter((piece) => piece.family_id === familyId && piece.size_id === sizeId)
+    .sort((a, b) => a.label_fr.localeCompare(b.label_fr, 'fr'));
 }
 
-function findLinkedCatalogPiece(shapeId = state.selectedShapeId) {
-  const basePiece = findCatalogPiecesForBase().find((piece) => piece.shape_variant_id === shapeId);
-  return basePiece ?? findCatalogPiecesForShape(shapeId)[0] ?? null;
+function getSpecsForBase(familyId, sizeId) {
+  return (state.catalog.spec_profiles ?? [])
+    .filter((spec) => spec.family_id === familyId && spec.size_id === sizeId)
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function formatCatalogPieceRef(piece) {
-  if (!piece) return 'aucune';
-  const spec = piece.spec_profile_id ? ` · spec ${piece.spec_profile_id}` : '';
-  const recipe = piece.recipe_id ? ` · recette ${piece.recipe_id}` : '';
-  return `${piece.label_fr ?? piece.id} [${piece.id}] · shape ${piece.shape_variant_id}${spec}${recipe}`;
-}
-
-function formatCatalogPieceList(pieces, maxItems = 3) {
-  const visible = pieces.slice(0, maxItems).map(formatCatalogPieceRef);
-  const remaining = pieces.length - visible.length;
-  return `${visible.join(' | ')}${remaining > 0 ? ` | +${remaining} autre(s)` : ''}`;
-}
-
-function syncSelectedCatalogPieceWithShape() {
-  const linkedPiece = findLinkedCatalogPiece();
-  state.selectedCatalogPieceId = linkedPiece?.id ?? null;
-  return linkedPiece;
+function getRecipesForBase(familyId, sizeId) {
+  const specIds = new Set(getSpecsForBase(familyId, sizeId).map((spec) => spec.id));
+  return (state.catalog.recipes ?? [])
+    .filter((recipe) => specIds.has(recipe.output_spec_profile_id))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function renderShapeSelect() {
-  const shapes = findShapesForCurrentBase();
-  dom.shapeVariantSelect.innerHTML = '';
+  if (!dom.shapeVariantSelect) return;
+  const shapes = findShapesForBase();
+  clearElement(dom.shapeVariantSelect);
   for (const shape of shapes) {
-    const piece = findLinkedCatalogPiece(shape.id);
     const option = document.createElement('option');
     option.value = shape.id;
-    option.textContent = `${piece?.label_fr ?? shape.label ?? `v${pad2(shape.variant_index)}`} · ${shape.generation?.mode ?? '?'}`;
+    option.textContent = `${shape.id} · ${shape.label ?? `v${pad2(shape.variant_index)}`} · ${shape.generation?.mode ?? '?'}`;
     option.selected = shape.id === state.selectedShapeId;
-    dom.shapeVariantSelect.append(option);
+    appendElement(dom.shapeVariantSelect, option);
   }
 }
 
 function renderCatalogPieceSelect() {
+  if (!dom.catalogPieceSelect) return;
   const pieces = findCatalogPiecesForBase();
-  const linkedPiece = findLinkedCatalogPiece();
-  if (!state.selectedCatalogPieceId || !pieces.some((piece) => piece.id === state.selectedCatalogPieceId)) {
-    state.selectedCatalogPieceId = linkedPiece?.id ?? null;
-  }
-
-  dom.catalogPieceSelect.innerHTML = '';
-  if (!state.selectedCatalogPieceId) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = 'Aucune entrée catalogue liée à cette variante';
-    option.selected = true;
-    dom.catalogPieceSelect.append(option);
-  }
-
+  clearElement(dom.catalogPieceSelect);
   for (const piece of pieces) {
     const option = document.createElement('option');
-    const isLinkedToActiveShape = piece.shape_variant_id === state.selectedShapeId;
     option.value = piece.id;
-    option.textContent = `${isLinkedToActiveShape ? '✓ ' : ''}${piece.label_fr ?? piece.id} · shape ${piece.shape_variant_id} · spec ${piece.spec_profile_id ?? 'n/a'}`;
+    option.textContent = `${piece.label_fr} · ${piece.shape_variant_id} · ${piece.spec_profile_id}`;
     option.selected = piece.id === state.selectedCatalogPieceId;
-    dom.catalogPieceSelect.append(option);
+    appendElement(dom.catalogPieceSelect, option);
   }
 }
 
 function renderSelectedBaseSummary() {
+  if (!dom.selectedBaseSummary) return;
   const base = state.selectedBase;
   const shape = selectedShape();
-  const linkedPieces = findCatalogPiecesForShape(shape?.id);
-  const linkedCatalogText = linkedPieces.length ? formatCatalogPieceList(linkedPieces, 2) : 'pièce catalogue interne absente';
+  const piece = selectedPiece();
   const size = getSize(base?.size_id);
   const cells = shape ? getShapeCells(shape, size) : [];
-  dom.selectedBaseSummary.textContent = base ? [
+  setElementText(dom.selectedBaseSummary, base ? [
     `modèle       : ${base.piece_label_fr} ${base.size_id}`,
     `family_id    : ${base.family_id}`,
     `shape        : ${shape?.id ?? 'aucune'}`,
-    `pièce        : ${linkedCatalogText}`,
-    `cellules     : ${cells.length} bloc(s) 1×1×1`,
-    state.message ? `message      : ${state.message}` : '',
-  ].filter(Boolean).join('\n') : 'Aucun modèle sélectionné.';
+    `catalog      : ${piece?.id ?? 'aucune entrée liée'}`,
+    `dimensions   : ${size?.dimensions ? `${size.dimensions.length}×${size.dimensions.width}×${size.dimensions.height}` : 'n/a'}`,
+    `cellules     : ${cells.length}`,
+  ].join('\n') : 'Aucun modèle sélectionné.');
 }
 
 function fullCells(size) {
@@ -498,6 +758,71 @@ function getShapeCells(shape, size = getSize(shape?.size_id)) {
   const cells = shape?.generation?.cells;
   if (Array.isArray(cells)) return normalizeCells(cells, size);
   return fullCells(size);
+}
+
+function getVisibleShapeCells(shape, size = getSize(shape?.size_id)) {
+  if (!shape || !size) return [];
+  const operations = shape.generation?.operations ?? [];
+  const suppressed = getSuppressedCellKeysForOperations(operations, size);
+  return getShapeCells(shape, size)
+    .filter((cell) => cell.enabled !== false)
+    .filter((cell) => !suppressed.has(cellKey(cell.x, cell.y, cell.z)));
+}
+
+function hasVisibleCell(cells, cell) {
+  const key = cellKey(cell.x, cell.y, cell.z);
+  return cells.some((item) => cellKey(item.x, item.y, item.z) === key);
+}
+
+function addCellVectors(a, b) {
+  return {
+    x: Number(a?.x) + Number(b?.x),
+    y: Number(a?.y) + Number(b?.y),
+    z: Number(a?.z) + Number(b?.z),
+  };
+}
+
+function oppositeFace(face) {
+  return {
+    left: 'right',
+    right: 'left',
+    front: 'back',
+    back: 'front',
+    bottom: 'top',
+    top: 'bottom',
+  }[face] ?? 'top';
+}
+
+function faceForCellDelta(delta) {
+  if (delta.x > 0) return 'right';
+  if (delta.x < 0) return 'left';
+  if (delta.y > 0) return 'back';
+  if (delta.y < 0) return 'front';
+  if (delta.z > 0) return 'top';
+  if (delta.z < 0) return 'bottom';
+  return null;
+}
+
+function isSelectableCellFace(cells, cell, face) {
+  if (!hasVisibleCell(cells, cell)) return false;
+  const normal = getNormalForFace(face);
+  const neighbor = addCellVectors(cell, normal);
+  return !hasVisibleCell(cells, neighbor);
+}
+
+function firstSelectableFaceForCell(cells, cell, preferredFaces = []) {
+  const faces = [...preferredFaces, 'top', 'front', 'back', 'left', 'right', 'bottom'];
+  const seen = new Set();
+  for (const face of faces) {
+    if (seen.has(face)) continue;
+    seen.add(face);
+    if (isSelectableCellFace(cells, cell, face)) return face;
+  }
+  return null;
+}
+
+function sortCellsForInitialFace(cells) {
+  return [...cells].sort((a, b) => (b.z - a.z) || (a.x - b.x) || (a.y - b.y));
 }
 
 function normalizeCells(cells, size) {
@@ -651,15 +976,9 @@ function cellKey(x, y, z) { return `${x}:${y}:${z}`; }
 function setCell(enabled) {
   const shape = selectedShape();
   if (!shape) return;
-  if (!isBaseShape(shape)) {
-    setMessage('Modification cellules refusée : réservée au modèle de base.');
-    return;
-  }
   ensureVoxelGeneration(shape);
   const size = getSize(shape.size_id);
-  const x = Math.floor(Number(dom.cellXInput.value));
-  const y = Math.floor(Number(dom.cellYInput.value));
-  const z = Math.floor(Number(dom.cellZInput.value));
+  const { x, y, z } = readCellInputValues();
   if (!isCellInside(size, x, y, z)) {
     setMessage(`Cellule hors limites pour ${shape.size_id}.`);
     return;
@@ -679,10 +998,6 @@ function isCellInside(size, x, y, z) {
 function resetFullBox() {
   const shape = selectedShape();
   if (!shape) return;
-  if (!isBaseShape(shape)) {
-    setMessage('Réinitialisation cellules refusée : réservée au modèle de base.');
-    return;
-  }
   ensureVoxelGeneration(shape);
   shape.generation.cells = fullCells(getSize(shape.size_id));
   markShapeDirty(shape, 'cells_reset_full_box');
@@ -692,10 +1007,6 @@ function resetFullBox() {
 function clearCells() {
   const shape = selectedShape();
   if (!shape) return;
-  if (!isBaseShape(shape)) {
-    setMessage('Vidage cellules refusé : réservé au modèle de base.');
-    return;
-  }
   ensureVoxelGeneration(shape);
   shape.generation.cells = [];
   markShapeDirty(shape, 'cells_cleared');
@@ -769,12 +1080,11 @@ function createVariantFromBase() {
   const next = getNextVariantIndex(size.id);
   const variantType = getCurrentNewVariantType();
   const id = uniqueId(`shape_${size.id}_${variantType}_v${pad2(next)}`, existingIds);
-  const label = `${state.selectedBase.piece_label_fr} ${size.id} · ${getVariantTypeLabel(variantType)} ${pad2(next)}`;
   const shape = {
     id,
     size_id: size.id,
     variant_index: next,
-    label,
+    label: `${size.label ?? size.id} · ${getVariantTypeLabel(variantType)} ${pad2(next)}`,
     shape_family: variantType === 'block' ? 'block' : variantType,
     simplified: true,
     fidelity: { target: 'functional_silhouette', ignore_cosmetic_details: true },
@@ -793,9 +1103,7 @@ function createVariantFromBase() {
   state.catalog.shape_variants.push(shape);
   rebuildRepo();
   state.selectedShapeId = id;
-  const piece = createCatalogPieceForShape(shape, { label_fr: label, source: 'catalog_editor_variant_create' });
-  state.selectedCatalogPieceId = piece?.id ?? null;
-  setMessage(`Variante créée : ${label}. Pièce Assembly créée : ${piece?.id ?? 'n/a'}.`);
+  setMessage(`Variante créée : ${id} (${getVariantTypeLabel(variantType)}).`);
   renderAll();
 }
 
@@ -812,42 +1120,37 @@ function duplicateVariant() {
   const next = getNextVariantIndex(source.size_id);
   const id = uniqueId(`shape_${source.size_id}_v${pad2(next)}`, new Set((state.catalog.shape_variants ?? []).map((shape) => shape.id)));
   const clone = structuredClone(source);
-  const sourcePiece = selectedPiece() ?? findLinkedCatalogPiece(source.id);
   clone.id = id;
   clone.variant_index = next;
-  clone.label = `${sourcePiece?.label_fr ?? source.label ?? source.id} copie ${pad2(next)}`;
+  clone.label = `${source.label ?? source.id} copie ${pad2(next)}`;
   clone.status = 'draft';
   clone.metadata = { ...(clone.metadata ?? {}), source: 'catalog_editor_duplicate', duplicated_from: source.id };
-  delete clone.metadata.catalog_piece_id;
-  delete clone.metadata.catalog_piece_sync;
   state.catalog.shape_variants.push(clone);
   rebuildRepo();
   state.selectedShapeId = id;
-  const piece = createCatalogPieceForShape(clone, { label_fr: clone.label, source: 'catalog_editor_variant_duplicate' });
-  state.selectedCatalogPieceId = piece?.id ?? null;
-  setMessage(`Variante dupliquée : ${clone.label}. Pièce Assembly créée : ${piece?.id ?? 'n/a'}.`);
+  setMessage(`Variante dupliquée : ${id}.`);
+  renderAll();
+}
+
+function deleteVariantById(shapeId = state.selectedShapeId) {
+  const shape = getShape(shapeId);
+  if (!shape) return;
+  const linkedPieces = (state.catalog.catalog_pieces ?? []).filter((piece) => piece.shape_variant_id === shape.id);
+  removeCatalogPiecesByIds(linkedPieces.map((piece) => piece.id));
+  removeShapesByIds([shape.id]);
+  rebuildRepo();
+  if (state.selectedShapeId === shape.id) {
+    state.selectedShapeId = findShapesForBase(state.selectedBase?.family_id, shape.size_id)[0]?.id ?? null;
+  }
+  if (state.selectedCatalogPieceId && !getPiece(state.selectedCatalogPieceId)) {
+    state.selectedCatalogPieceId = findCatalogPiecesForBase()[0]?.id ?? null;
+  }
+  setMessage(`Variante supprimée : ${shape.id}.`);
   renderAll();
 }
 
 function deleteVariant() {
-  const shape = selectedShape();
-  if (!shape) return;
-  if (isBaseShape(shape)) {
-    setMessage(`Suppression refusée : ${shape.id} est un modèle de base protégé.`);
-    renderAll();
-    return;
-  }
-  const usedBy = findCatalogPiecesForShape(shape.id);
-  const removedPieceIds = usedBy.map((piece) => piece.id);
-  if (usedBy.length) state.catalog.catalog_pieces = state.catalog.catalog_pieces.filter((piece) => piece.shape_variant_id !== shape.id);
-  state.catalog.shape_variants = state.catalog.shape_variants.filter((item) => item.id !== shape.id);
-  rebuildRepo();
-  const nextPiece = findCatalogPiecesForBase()[0] ?? null;
-  state.selectedCatalogPieceId = nextPiece?.id ?? null;
-  state.selectedShapeId = nextPiece?.shape_variant_id ?? findShapesForCurrentBase()[0]?.id ?? findShapesForSize()[0]?.id ?? null;
-  syncSelectedCatalogPieceWithShape();
-  setMessage(`Variante supprimée : ${shape.id}${removedPieceIds.length ? ` · pièce(s) Assembly supprimée(s) : ${removedPieceIds.join(', ')}` : ''}.`);
-  renderAll();
+  deleteVariantById(state.selectedShapeId);
 }
 
 function ensureSpecProfile(familyId, sizeId, profileType = 'standard') {
@@ -893,29 +1196,25 @@ function ensureRecipe(spec, familyId, sizeId, profileType = 'standard') {
   return recipe;
 }
 
-function createCatalogPieceForShape(shape, options = {}) {
-  if (!state.selectedBase || !shape) return null;
+function createCatalogPiece() {
+  if (!state.selectedBase || !state.selectedShapeId) return;
   const family = getFamily(state.selectedBase.family_id);
   const size = getSize(state.selectedBase.size_id);
-  if (!family || !size || shape.size_id !== size.id) return null;
-
-  const existing = findCatalogPiecesForBase().find((piece) => piece.shape_variant_id === shape.id);
-  if (existing) return existing;
-
-  const profileType = options.profileType ?? 'standard';
+  const shape = selectedShape();
+  if (!family || !size || !shape) return;
+  if (shape.size_id !== size.id) {
+    setMessage(`Création refusée : variante ${shape.id} incompatible avec ${size.id}.`);
+    renderStats();
+    return;
+  }
+  const profileType = 'standard';
   const spec = ensureSpecProfile(family.id, size.id, profileType);
   const recipe = ensureRecipe(spec, family.id, size.id, profileType);
-  const variantCode = Number(shape.variant_index) === 0 ? 'base' : `v${pad2(shape.variant_index)}`;
-  const id = uniqueId(
-    `piece_${family.id}_${size.id}_${variantCode}_${profileType}`,
-    new Set((state.catalog.catalog_pieces ?? []).map((piece) => piece.id)),
-  );
-  const label = options.label_fr
-    ?? shape.label
-    ?? `${state.selectedBase.piece_label_fr} ${size.id}${Number(shape.variant_index) ? ` ${variantCode}` : ''}`;
+  const variantCode = shape.variant_index === 0 ? 'base' : `v${pad2(shape.variant_index)}`;
+  const id = uniqueId(`piece_${family.id}_${size.id}_${variantCode}_${profileType}`, new Set((state.catalog.catalog_pieces ?? []).map((piece) => piece.id)));
   const piece = {
     id,
-    label_fr: label,
+    label_fr: `${state.selectedBase.piece_label_fr} ${size.id}${shape.variant_index ? ` ${variantCode}` : ''}`,
     family_id: family.id,
     size_id: size.id,
     shape_variant_id: shape.id,
@@ -923,86 +1222,167 @@ function createCatalogPieceForShape(shape, options = {}) {
     recipe_id: recipe.id,
     fixed_catalog_entry: true,
     availability: { status: 'unknown', unlock: null },
-    metadata: {
-      source: options.source ?? 'catalog_editor',
-      variant_owned_shape: true,
-      base_model: isBaseShape(shape),
-      notes: [],
-    },
+    metadata: { source: 'catalog_editor', base_model: true, notes: [] },
   };
-
   state.catalog.catalog_pieces ??= [];
   state.catalog.catalog_pieces.push(piece);
-  shape.metadata ??= {};
-  shape.metadata.catalog_piece_id = piece.id;
-  shape.metadata.catalog_piece_sync = 'owned_by_variant';
+  rebuildRepo();
+  state.selectedCatalogPieceId = id;
+  setMessage(`Entrée catalogue créée : ${id}.`);
+  renderAll();
+}
+
+function createCatalogPieceForShape({ familyId, sizeId, shapeId, pieceLabelFr, variantIndex, profileType = 'standard' }) {
+  const existing = getCatalogPiecesForBase(familyId, sizeId).find((piece) => piece.shape_variant_id === shapeId);
+  if (existing) return existing;
+  const spec = ensureSpecProfile(familyId, sizeId, profileType);
+  const recipe = ensureRecipe(spec, familyId, sizeId, profileType);
+  const variantCode = Number(variantIndex) <= 1 ? 'base' : `v${pad2(variantIndex)}`;
+  const id = uniqueId(
+    `piece_${familyId}_${sizeId}_${variantCode}_${profileType}`,
+    new Set((state.catalog.catalog_pieces ?? []).map((piece) => piece.id)),
+  );
+  const piece = {
+    id,
+    label_fr: `${pieceLabelFr} ${sizeId}${Number(variantIndex) > 1 ? ` v${pad2(variantIndex)}` : ''}`,
+    family_id: familyId,
+    size_id: sizeId,
+    shape_variant_id: shapeId,
+    spec_profile_id: spec.id,
+    recipe_id: recipe.id,
+    fixed_catalog_entry: true,
+    availability: { status: 'unknown', unlock: null },
+    metadata: { source: 'catalog_editor', base_model: Number(variantIndex) <= 1, notes: [] },
+  };
+  state.catalog.catalog_pieces ??= [];
+  state.catalog.catalog_pieces.push(piece);
   rebuildRepo();
   return piece;
 }
 
-function createCatalogPiece() {
-  const shape = selectedShape();
-  if (!shape) return;
-  const piece = createCatalogPieceForShape(shape, { source: 'catalog_editor_repair' });
-  if (!piece) {
-    setMessage(`Création interne refusée : variante ${shape.id} incompatible avec ${state.selectedBase?.size_id ?? 'taille inconnue'}.`);
+function removeShapesByIds(shapeIds) {
+  const ids = new Set(shapeIds);
+  state.catalog.shape_variants = (state.catalog.shape_variants ?? []).filter((shape) => !ids.has(shape.id));
+}
+
+function removeCatalogPiecesByIds(pieceIds) {
+  const ids = new Set(pieceIds);
+  state.catalog.catalog_pieces = (state.catalog.catalog_pieces ?? []).filter((piece) => !ids.has(piece.id));
+}
+
+function deleteBaseReferenceByFamilyAndSize(familyId, sizeId, { confirm: askConfirmation = true } = {}) {
+  const pieces = getCatalogPiecesForBase(familyId, sizeId);
+  const shapes = findShapesForBase(familyId, sizeId);
+  const specs = getSpecsForBase(familyId, sizeId);
+  const recipes = getRecipesForBase(familyId, sizeId);
+  if (!pieces.length && !shapes.length && !specs.length && !recipes.length) {
+    setMessage(`Suppression refusée : aucune référence pour ${getFamilyLabel(familyId)} ${sizeId}.`);
     renderStats();
-    return;
+    return false;
   }
-  state.selectedCatalogPieceId = piece.id;
-  setMessage(`Pièce catalogue interne prête : ${piece.id}.`);
+
+  if (askConfirmation) {
+    const confirmed = globalThis.confirm(
+      [
+        `Supprimer ${getFamilyLabel(familyId)} ${sizeId} ?`,
+        `${shapes.length} variante(s)`,
+        `${pieces.length} entrée(s) catalogue`,
+        `${specs.length} spec(s)`,
+        `${recipes.length} recette(s)`,
+      ].join('\n'),
+    );
+    if (!confirmed) return false;
+  }
+
+  removeCatalogPiecesByIds(pieces.map((piece) => piece.id));
+  removeShapesByIds(shapes.map((shape) => shape.id));
+  const specIds = new Set(specs.map((spec) => spec.id));
+  state.catalog.spec_profiles = (state.catalog.spec_profiles ?? []).filter((spec) => !specIds.has(spec.id));
+  state.catalog.recipes = (state.catalog.recipes ?? []).filter((recipe) => !specIds.has(recipe.output_spec_profile_id));
+  removeBaseGroupSize(familyId, sizeId);
+  rebuildRepo();
+
+  if (state.selectedBase?.family_id === familyId && state.selectedBase?.size_id === sizeId) {
+    state.selectedCatalogPieceId = null;
+    state.selectedShapeId = null;
+    state.selectedFace = null;
+    const group = [getBaseGroupByFamilyId(familyId), ...getBaseGroups()].find((item) => item?.sizes?.length) ?? null;
+    const fallbackSizeId = group?.sizes?.[0] ?? null;
+    if (group && fallbackSizeId) {
+      selectBaseModel(group, fallbackSizeId, { keepView: true });
+      setMessage(`Référence supprimée : ${getFamilyLabel(familyId)} ${sizeId}.`);
+      return true;
+    }
+    state.selectedBase = null;
+  }
+
+  setMessage(`Référence supprimée : ${getFamilyLabel(familyId)} ${sizeId}.`);
+  renderAll();
+  return true;
+}
+
+function deleteCatalogPieceById(pieceId = state.selectedCatalogPieceId) {
+  const piece = getPiece(pieceId);
+  if (!piece) return;
+  removeCatalogPiecesByIds([piece.id]);
+  rebuildRepo();
+  const remainingPieces = (state.catalog.catalog_pieces ?? [])
+    .filter((item) => item.family_id === piece.family_id && item.size_id === piece.size_id)
+    .sort((a, b) => a.label_fr.localeCompare(b.label_fr, 'fr'));
+  state.selectedCatalogPieceId = remainingPieces[0]?.id ?? null;
+  if (state.selectedCatalogPieceId) {
+    state.selectedShapeId = getPiece(state.selectedCatalogPieceId)?.shape_variant_id ?? state.selectedShapeId;
+  } else if (state.selectedShapeId === piece.shape_variant_id) {
+    state.selectedShapeId = findShapesForBase(piece.family_id, piece.size_id)[0]?.id ?? null;
+  }
+  setMessage(`Entrée catalogue supprimée : ${piece.id}.`);
   renderAll();
 }
 
 function deleteCatalogPiece() {
-  const piece = selectedPiece();
-  if (!piece) return;
-  setMessage(`Suppression isolée refusée : ${piece.id} appartient à la variante. Supprimer la variante supprime aussi sa pièce Assembly.`);
-  renderStats();
+  deleteCatalogPieceById(state.selectedCatalogPieceId);
 }
 
 function renderShapeForm() {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
-  syncShapeEditorCards();
-  dom.shapeIdInput.value = shape?.id ?? '';
-  dom.shapeLabelInput.value = shape?.label ?? '';
-  dom.shapeFamilyInput.value = shape?.shape_family ?? '';
-  dom.shapeStatusSelect.value = shape?.status ?? 'draft';
+  if (dom.shapeIdInput) dom.shapeIdInput.value = shape?.id ?? '';
+  if (dom.shapeLabelInput) dom.shapeLabelInput.value = shape?.label ?? '';
+  if (dom.shapeFamilyInput) dom.shapeFamilyInput.value = shape?.shape_family ?? '';
+  if (dom.shapeStatusSelect) dom.shapeStatusSelect.value = shape?.status ?? 'draft';
+  if (!dom.cellSummary) return;
   const cells = shape ? getShapeCells(shape, size) : [];
-  dom.cellSummary.textContent = shape ? [
+  setElementText(dom.cellSummary, shape ? [
     `taille       : ${shape.size_id}`,
     `dimensions   : ${size?.dimensions?.length ?? '?'}×${size?.dimensions?.width ?? '?'}×${size?.dimensions?.height ?? '?'}`,
     `cellules     : ${cells.length}`,
     `mode         : ${shape.generation?.mode ?? 'n/a'}`,
     isParametricShape(shape) ? `type global  : ${shape.generation?.base?.type ?? shape.shape_family}` : '',
     shape.generation?.mode !== 'voxel_grid' && !isParametricShape(shape) ? 'note         : converti en voxel_grid dès modification cellule' : '',
-  ].filter(Boolean).join('\n') : 'Aucune variante sélectionnée.';
+  ].filter(Boolean).join('\n') : 'Aucune variante sélectionnée.');
 }
 
 function updateShapeIdentity() {
   const shape = selectedShape();
   if (!shape) return;
-  shape.label = dom.shapeLabelInput.value.trim();
-  shape.shape_family = slugifyId(dom.shapeFamilyInput.value || 'block');
-  shape.status = dom.shapeStatusSelect.value;
+  if (dom.shapeLabelInput) shape.label = dom.shapeLabelInput.value.trim();
+  if (dom.shapeFamilyInput) shape.shape_family = slugifyId(dom.shapeFamilyInput.value || shape.shape_family || 'block');
+  if (dom.shapeStatusSelect) shape.status = dom.shapeStatusSelect.value;
   shape.metadata ??= {};
   shape.metadata.updated_at = new Date().toISOString();
-  const piece = findLinkedCatalogPiece(shape.id);
-  if (piece) piece.label_fr = shape.label;
   renderAll(false);
 }
 
 function renderOperations() {
   const shape = selectedShape();
   const operations = shape?.generation?.operations ?? [];
-  dom.operationListSelect.innerHTML = '';
+  clearElement(dom.operationListSelect);
   operations.forEach((op, index) => {
     const option = document.createElement('option');
     option.value = String(index);
     option.textContent = `${index + 1}. ${describeShapeOperation(op)}`;
     option.selected = state.selectedOperationIndex === index;
-    dom.operationListSelect.append(option);
+    appendElement(dom.operationListSelect, option);
   });
   renderVariantFaceSummary();
 }
@@ -1119,11 +1499,6 @@ function operationScopeKey(op) {
 function createOperationFromSelectedFace(type) {
   const shape = selectedShape();
   const selectedFace = state.selectedFace;
-  if (shape && !isEditableVariantShape(shape)) {
-    setMessage('Correction refusée : réservée aux variantes.');
-    renderOperations();
-    return;
-  }
   if (!shape || !selectedFace) {
     setMessage('Correction refusée : aucune face sélectionnée.');
     renderOperations();
@@ -1164,11 +1539,6 @@ function createOperationFromSelectedFace(type) {
 function removeFaceOperation() {
   const shape = selectedShape();
   if (!shape) return;
-  if (!isEditableVariantShape(shape)) {
-    setMessage('Suppression correction refusée : réservée aux variantes.');
-    renderOperations();
-    return;
-  }
   ensureVoxelGeneration(shape);
   const operations = shape.generation.operations ?? [];
   let index = -1;
@@ -1176,7 +1546,7 @@ function removeFaceOperation() {
     index = operations.findIndex((op) => operationMatchesSelectedFace(op, state.selectedFace));
   }
   if (index < 0) {
-    const selected = Number(dom.operationListSelect.value);
+    const selected = Number(dom.operationListSelect?.value ?? state.selectedOperationIndex);
     if (Number.isInteger(selected) && selected >= 0) index = selected;
   }
   if (index < 0) {
@@ -1193,31 +1563,27 @@ function removeFaceOperation() {
 
 function renderVariantFaceSummary() {
   if (!dom.variantFaceSummary) return;
-  if (!isEditableVariantShape()) {
-    dom.variantFaceSummary.textContent = 'Corrections réservées aux variantes.';
-    return;
-  }
   const face = state.selectedFace;
   if (!face) {
-    dom.variantFaceSummary.textContent = 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.';
+    setElementText(dom.variantFaceSummary, 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.');
     return;
   }
   const size = getSize(selectedShape()?.size_id);
   const scope = deriveFaceOperationScope(face, size);
   const existing = (selectedShape()?.generation?.operations ?? []).filter((op) => operationMatchesSelectedFace(op, face));
-  dom.variantFaceSummary.textContent = [
+  setElementText(dom.variantFaceSummary, [
     `cellule   : ${face.cell.x}, ${face.cell.y}, ${face.cell.z}`,
     `face      : ${face.face}`,
     `action    : arrondi R1 ou chanfrein 0.5`,
     `portée    : ${scope.label_fr ?? scope.kind}`,
     `correction: ${existing.length ? existing.map(describeShapeOperation).join(' | ') : 'aucune'}`,
-  ].join('\n');
+  ].join('\n'));
 }
 
 function renderAnchors() {
   const shape = selectedShape();
   const anchors = shape?.anchors ?? [];
-  dom.anchorListSelect.innerHTML = '';
+  clearElement(dom.anchorListSelect);
   for (const anchor of anchors) {
     const option = document.createElement('option');
     option.value = anchor.id;
@@ -1226,7 +1592,7 @@ function renderAnchors() {
     const cellText = cell ? `cell ${cell.x},${cell.y},${cell.z}` : 'cell ?';
     option.textContent = `${anchor.id} · ${anchor.face ?? '?'} · ${cellText} · ${p.x ?? '?'},${p.y ?? '?'},${p.z ?? '?'}`;
     option.selected = anchor.id === state.selectedAnchorId;
-    dom.anchorListSelect.append(option);
+    appendElement(dom.anchorListSelect, option);
   }
   renderSelectedFaceSummary();
 }
@@ -1278,16 +1644,16 @@ function renderSelectedFaceSummary() {
   if (!dom.selectedFaceSummary) return;
   const face = state.selectedFace;
   if (!face) {
-    dom.selectedFaceSummary.textContent = 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.';
+    setElementText(dom.selectedFaceSummary, 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.');
     return;
   }
   const existing = (selectedShape()?.anchors ?? []).find((anchor) => anchorMatchesSelectedFace(anchor, face));
-  dom.selectedFaceSummary.textContent = [
+  setElementText(dom.selectedFaceSummary, [
     `cellule : ${face.cell.x}, ${face.cell.y}, ${face.cell.z}`,
     `face    : ${face.face}`,
     `position: ${face.position.x}, ${face.position.y}, ${face.position.z}`,
     `ancre   : ${existing ? existing.id : 'aucune'}`,
-  ].join('\n');
+  ].join('\n'));
 }
 
 function addAnchor() {
@@ -1349,6 +1715,18 @@ function deleteAnchor() {
   renderAll();
 }
 
+function toggleAnchorOnSelectedFace() {
+  const shape = selectedShape();
+  if (!shape || !state.selectedFace) return false;
+  const existing = (shape.anchors ?? []).find((anchor) => anchorMatchesSelectedFace(anchor));
+  if (existing) {
+    deleteAnchor();
+  } else {
+    addAnchor();
+  }
+  return true;
+}
+
 function fillAnchorForm(anchorId) {
   const shape = selectedShape();
   const anchor = (shape?.anchors ?? []).find((item) => item.id === anchorId);
@@ -1391,22 +1769,22 @@ function renderSpecProfileSelect() {
   if (!dom.specProfileSelect) return;
   ensureBaseSpecAndRecipe();
   const specs = getSpecsForSelectedBase();
-  dom.specProfileSelect.innerHTML = '';
+  clearElement(dom.specProfileSelect);
   for (const spec of specs) {
     const option = document.createElement('option');
     option.value = spec.id;
     option.textContent = `${spec.label_fr ?? spec.id} · ${spec.profile_type ?? 'standard'}`;
-    dom.specProfileSelect.append(option);
+    appendElement(dom.specProfileSelect, option);
   }
   renderModalContexts();
 }
 
 function renderSpecEditor() {
   if (!dom.specEditor) return;
-  dom.specEditor.innerHTML = '';
-  const spec = getSpec(dom.specProfileSelect.value) ?? getSpecsForSelectedBase()[0] ?? null;
+  clearElement(dom.specEditor);
+  const spec = getSpec(dom.specProfileSelect?.value) ?? getSpecsForSelectedBase()[0] ?? null;
   if (!spec) {
-    dom.specEditor.textContent = 'Aucun profil technique lié au modèle de base.';
+    setElementText(dom.specEditor, 'Aucun profil technique lié au modèle de base.');
     return;
   }
   const definitions = state.catalog.definitions?.spec_fields ?? {};
@@ -1427,17 +1805,8 @@ function renderSpecEditor() {
       renderStats();
       renderValidationReport();
     });
-    const status = document.createElement('select');
-    for (const item of ['unknown', 'draft', 'confirmed']) {
-      const option = document.createElement('option');
-      option.value = item;
-      option.textContent = item;
-      option.selected = value.status === item;
-      status.append(option);
-    }
-    status.addEventListener('change', () => { value.status = status.value; renderValidationReport(); });
-    row.append(label, input, status);
-    dom.specEditor.append(row);
+    row.append(label, input);
+    appendElement(dom.specEditor, row);
   }
 }
 
@@ -1445,22 +1814,22 @@ function renderRecipeSelect() {
   if (!dom.recipeSelect) return;
   ensureBaseSpecAndRecipe();
   const recipes = getRecipesForSelectedBase();
-  dom.recipeSelect.innerHTML = '';
+  clearElement(dom.recipeSelect);
   for (const recipe of recipes) {
     const option = document.createElement('option');
     option.value = recipe.id;
     option.textContent = recipe.id;
-    dom.recipeSelect.append(option);
+    appendElement(dom.recipeSelect, option);
   }
   renderModalContexts();
 }
 
 function renderRecipeEditor() {
   if (!dom.recipeEditor) return;
-  dom.recipeEditor.innerHTML = '';
-  const recipe = getRecipe(dom.recipeSelect.value) ?? getRecipesForSelectedBase()[0] ?? null;
+  clearElement(dom.recipeEditor);
+  const recipe = getRecipe(dom.recipeSelect?.value) ?? getRecipesForSelectedBase()[0] ?? null;
   if (!recipe) {
-    dom.recipeEditor.textContent = 'Aucune recette liée au modèle de base.';
+    setElementText(dom.recipeEditor, 'Aucune recette liée au modèle de base.');
     return;
   }
   const fields = [
@@ -1485,7 +1854,7 @@ function renderRecipeEditor() {
       renderValidationReport();
     });
     row.append(label, input);
-    dom.recipeEditor.append(row);
+    appendElement(dom.recipeEditor, row);
   }
   const area = document.createElement('textarea');
   area.rows = 6;
@@ -1505,7 +1874,7 @@ function renderRecipeEditor() {
   const label = document.createElement('span');
   label.textContent = 'Ingrédients JSON';
   block.append(label, area);
-  dom.recipeEditor.append(block);
+  appendElement(dom.recipeEditor, block);
 }
 
 function renderModalContexts() {
@@ -1540,6 +1909,230 @@ function openRecipeModal() {
 function closeRecipeModal() {
   dom.recipeModal?.classList.remove('open');
   dom.recipeModal?.setAttribute('aria-hidden', 'true');
+}
+
+function setModalOpen(modal, open) {
+  modal?.classList.toggle('open', open);
+  modal?.setAttribute('aria-hidden', String(!open));
+}
+
+function openBaseReferenceModal(familyId) {
+  state.baseReferenceFamilyId = familyId;
+  const familyLabel = getFamilyLabel(familyId);
+  setElementText(dom.baseReferenceModalContext, `${familyLabel}\nCréer une référence famille/taille.`);
+  dom.newBaseLengthInput && (dom.newBaseLengthInput.value = '4');
+  dom.newBaseWidthInput && (dom.newBaseWidthInput.value = '3');
+  dom.newBaseHeightInput && (dom.newBaseHeightInput.value = '1');
+  setModalOpen(dom.baseReferenceModal, true);
+  dom.newBaseLengthInput?.focus();
+}
+
+function closeBaseReferenceModal() {
+  setModalOpen(dom.baseReferenceModal, false);
+}
+
+function ensureSizeDefinition(length, width, height) {
+  const sizeId = makeSizeId(length, width, height);
+  let size = getSize(sizeId);
+  if (size) return size;
+  size = {
+    id: sizeId,
+    label: sizeId,
+    dimensions: { length, width, height },
+    status: 'draft',
+  };
+  state.catalog.sizes ??= [];
+  state.catalog.sizes.push(size);
+  rebuildRepo();
+  return size;
+}
+
+function createBaseReferenceFromModal() {
+  const familyId = state.baseReferenceFamilyId;
+  const group = getBaseGroupByFamilyId(familyId);
+  if (!familyId || !group) return;
+
+  const length = Math.floor(Number(dom.newBaseLengthInput?.value));
+  const width = Math.floor(Number(dom.newBaseWidthInput?.value));
+  const height = Math.floor(Number(dom.newBaseHeightInput?.value));
+  if (![length, width, height].every((value) => Number.isInteger(value) && value > 0)) {
+    setMessage('Création refusée : dimensions invalides.');
+    renderStats();
+    return;
+  }
+
+  const size = ensureSizeDefinition(length, width, height);
+  const sizeId = size.id;
+  if (getCatalogPiecesForBase(familyId, sizeId).length || findShapesForBase(familyId, sizeId).length) {
+    setMessage(`Création refusée : ${group.piece_label_fr} ${sizeId} existe déjà.`);
+    renderStats();
+    return;
+  }
+
+  ensureBaseGroupSize(familyId, sizeId);
+  const shapeId = uniqueId(`shape_${familyId}_${sizeId}_v01`, new Set((state.catalog.shape_variants ?? []).map((shape) => shape.id)));
+  const shape = {
+    id: shapeId,
+    size_id: sizeId,
+    variant_index: 1,
+    label: 'Variante 01 — Standard',
+    shape_family: 'standard_block',
+    simplified: true,
+    fidelity: { target: 'functional_silhouette', ignore_cosmetic_details: true },
+    generation: createGenerationForVariantType('block', size),
+    allowed_symmetry: { length: true, width: true, height: true },
+    anchors: createDefaultAnchors(size),
+    collision: { mode: 'generated_from_shape', precision: 'voxel_1x1x1', allow_overlap: false },
+    status: 'draft',
+    metadata: { source: 'catalog_editor', based_on: `${familyId}:${sizeId}`, variant_type: 'block', notes: [] },
+  };
+  state.catalog.shape_variants ??= [];
+  state.catalog.shape_variants.push(shape);
+  rebuildRepo();
+  const piece = createCatalogPieceForShape({
+    familyId,
+    sizeId,
+    shapeId,
+    pieceLabelFr: group.piece_label_fr,
+    variantIndex: 1,
+  });
+  closeBaseReferenceModal();
+  selectBaseModel(group, sizeId, { keepView: true });
+  state.selectedShapeId = shape.id;
+  state.selectedCatalogPieceId = piece.id;
+  setMessage(`Référence créée : ${group.piece_label_fr} ${sizeId}.`);
+  renderAll();
+}
+
+function getAvailableVariantIndexes(familyId, sizeId, maxIndex = 14) {
+  const used = new Set(findShapesForBase(familyId, sizeId).map((shape) => Number(shape.variant_index) || 0));
+  const available = [];
+  for (let index = 2; index <= maxIndex; index += 1) {
+    if (!used.has(index)) available.push(index);
+  }
+  return available;
+}
+
+function renderVariantIconGrid() {
+  if (!dom.newVariantIconGrid) return;
+  clearElement(dom.newVariantIconGrid);
+  const familyId = dom.newVariantFamilySelect?.value;
+  const sizeId = dom.newVariantSizeSelect?.value;
+  const available = getAvailableVariantIndexes(familyId, sizeId);
+  if (!available.length) {
+    setElementText(dom.newVariantIconGrid, 'Aucune variante disponible.');
+    state.variantModalSelection = null;
+    if (dom.createVariantFromModalBtn) dom.createVariantFromModalBtn.disabled = true;
+    return;
+  }
+  if (dom.createVariantFromModalBtn) dom.createVariantFromModalBtn.disabled = false;
+  if (!available.includes(state.variantModalSelection)) state.variantModalSelection = available[0];
+  for (const index of available) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `variant-icon-option${state.variantModalSelection === index ? ' active' : ''}`;
+    const image = document.createElement('img');
+    image.className = 'variant-icon';
+    image.alt = `Icône variante ${index}`;
+    image.src = resolveRuntimePath(`ui/shape-buttons/button_${pad2(index)}.png`);
+    const label = document.createElement('span');
+    label.textContent = `v${pad2(index)}`;
+    button.append(image, label);
+    button.addEventListener('click', () => {
+      state.variantModalSelection = index;
+      renderVariantIconGrid();
+    });
+    appendElement(dom.newVariantIconGrid, button);
+  }
+}
+
+function fillVariantCreationSelectors(familyId, sizeId) {
+  clearElement(dom.newVariantFamilySelect);
+  clearElement(dom.newVariantSizeSelect);
+  for (const group of getBaseGroups()) {
+    const option = document.createElement('option');
+    option.value = group.family_id;
+    option.textContent = group.label_fr;
+    option.selected = group.family_id === familyId;
+    appendElement(dom.newVariantFamilySelect, option);
+  }
+  const group = getBaseGroupByFamilyId(familyId);
+  for (const itemSizeId of group?.sizes ?? []) {
+    const option = document.createElement('option');
+    option.value = itemSizeId;
+    option.textContent = itemSizeId;
+    option.selected = itemSizeId === sizeId;
+    appendElement(dom.newVariantSizeSelect, option);
+  }
+}
+
+function openVariantCreationModal(familyId = state.selectedBase?.family_id, sizeId = state.selectedBase?.size_id) {
+  fillVariantCreationSelectors(familyId, sizeId);
+  setElementText(dom.variantCreationModalContext, `${getFamilyLabel(familyId)}\n${sizeId}\nCréer une nouvelle variante.`);
+  state.variantModalSelection = getAvailableVariantIndexes(familyId, sizeId)[0] ?? null;
+  renderVariantIconGrid();
+  setModalOpen(dom.variantCreationModal, true);
+  dom.newVariantFamilySelect?.focus();
+}
+
+function closeVariantCreationModal() {
+  setModalOpen(dom.variantCreationModal, false);
+}
+
+function createVariantFromModal() {
+  const familyId = dom.newVariantFamilySelect?.value;
+  const sizeId = dom.newVariantSizeSelect?.value;
+  const variantIndex = Number(state.variantModalSelection);
+  const group = getBaseGroupByFamilyId(familyId);
+  const size = getSize(sizeId);
+  if (!group || !size || !Number.isInteger(variantIndex) || variantIndex < 2) {
+    setMessage('Création variante refusée : sélection incomplète.');
+    renderStats();
+    return;
+  }
+  if (findShapesForBase(familyId, sizeId).some((shape) => Number(shape.variant_index) === variantIndex)) {
+    setMessage(`Création variante refusée : v${pad2(variantIndex)} existe déjà pour ${group.piece_label_fr} ${sizeId}.`);
+    renderStats();
+    return;
+  }
+  const shapeId = uniqueId(`shape_${familyId}_${sizeId}_v${pad2(variantIndex)}`, new Set((state.catalog.shape_variants ?? []).map((shape) => shape.id)));
+  const shape = {
+    id: shapeId,
+    size_id: sizeId,
+    variant_index: variantIndex,
+    label: `Variante ${pad2(variantIndex)}`,
+    shape_family: 'standard_block',
+    simplified: true,
+    fidelity: { target: 'functional_silhouette', ignore_cosmetic_details: true },
+    generation: createGenerationForVariantType('block', size),
+    allowed_symmetry: { length: true, width: true, height: true },
+    anchors: createDefaultAnchors(size),
+    collision: { mode: 'generated_from_shape', precision: 'voxel_1x1x1', allow_overlap: false },
+    status: 'draft',
+    metadata: {
+      source: 'catalog_editor',
+      based_on: `${familyId}:${sizeId}`,
+      variant_type: 'block',
+      icon_index: variantIndex,
+      notes: [],
+    },
+  };
+  state.catalog.shape_variants ??= [];
+  state.catalog.shape_variants.push(shape);
+  rebuildRepo();
+  const piece = createCatalogPieceForShape({
+    familyId,
+    sizeId,
+    shapeId,
+    pieceLabelFr: group.piece_label_fr,
+    variantIndex,
+  });
+  closeVariantCreationModal();
+  selectBaseModel(group, sizeId, { keepView: true });
+  state.selectedShapeId = shape.id;
+  state.selectedCatalogPieceId = piece.id;
+  setMessage(`Variante créée : ${shape.id}.`);
+  renderAll();
 }
 
 
@@ -1579,6 +2172,7 @@ function renderPreview() {
   const suppressed = getSuppressedCellKeysForOperations(operations, size);
 
   const allCells = getShapeCells(shape, size).filter((cell) => cell.enabled !== false);
+  const visibleCells = allCells.filter((cell) => !suppressed.has(cellKey(cell.x, cell.y, cell.z)));
 
   const previewGeometry = buildShapeGeometry({
     shape,
@@ -1594,8 +2188,8 @@ function renderPreview() {
   );
   root.add(preview);
 
-  if (isParametricShape(shape)) renderVoxelGuide(allCells, size);
-  renderCellPickProxies(allCells, size);
+  if (isParametricShape(shape)) renderVoxelGuide(visibleCells, size);
+  renderCellPickProxies(visibleCells, size);
 
   const boundsBox = createCatalogReservationBox(size, CELL_SCALE, new THREE.Vector3());
   const bounds = new THREE.Box3Helper(boundsBox, SELECTED_COLOR);
@@ -1684,10 +2278,8 @@ function renderVoxelGuide(cells, size) {
 }
 
 function createOperationMaterial() {
-  return new THREE.MeshStandardMaterial({
+  return new THREE.MeshBasicMaterial({
     color: CELL_COLOR,
-    metalness: 0.1,
-    roughness: 0.5,
     side: THREE.DoubleSide,
   });
 }
@@ -1729,6 +2321,7 @@ function catalogNormalToWorld(normal) {
 function renderSelectedFaceHint(size) {
   const selectedFace = state.selectedFace;
   if (!selectedFace) return;
+  renderSelectedCellOutline(size, selectedFace);
   const normal = catalogNormalToWorld(getNormalForFace(selectedFace.face));
   const dims = { x: CELL_SCALE * 0.72, y: CELL_SCALE * 0.72, z: CELL_SCALE * 0.72 };
   if (Math.abs(normal.x)) dims.x = CELL_SCALE * 0.045;
@@ -1746,6 +2339,17 @@ function renderSelectedFaceHint(size) {
   root.add(marker);
 }
 
+function renderSelectedCellOutline(size, selectedFace = state.selectedFace) {
+  if (!selectedFace) return;
+  const geom = new THREE.BoxGeometry(CELL_SCALE * 1.04, CELL_SCALE * 1.04, CELL_SCALE * 1.04);
+  const edges = new THREE.EdgesGeometry(geom);
+  geom.dispose();
+  const mat = new THREE.LineBasicMaterial({ color: SELECTED_COLOR, transparent: true, opacity: 0.95 });
+  const outline = new THREE.LineSegments(edges, mat);
+  outline.position.copy(cellCenterToWorld(selectedFace.cell, size));
+  root.add(outline);
+}
+
 function catalogPositionToWorld(position, size) {
   return catalogPointVector(position, size.dimensions, CELL_SCALE);
 }
@@ -1757,7 +2361,7 @@ function fitPreview(renderNow = true) {
   const size = getSize(shape?.size_id);
   if (!size) return;
   const maxSize = Math.max(size.dimensions.length, size.dimensions.width, size.dimensions.height) * CELL_SCALE;
-  const center = new THREE.Vector3(0, 0, 0);
+  const center = new THREE.Vector3(0, 0, (Number(size.dimensions.height) || 1) * CELL_SCALE / 2);
   const distance = Math.max(180, maxSize * 2.4);
   editorViewController?.resetView({ target: center, distance });
   syncEditorNavigationCubeActiveView();
@@ -1765,17 +2369,19 @@ function fitPreview(renderNow = true) {
 }
 
 function resetPreview() {
-  editorViewController?.resetView({ target: new THREE.Vector3(0, 0, 0) });
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  const targetZ = size ? (Number(size.dimensions.height) || 1) * CELL_SCALE / 2 : 0;
+  editorViewController?.resetView({ target: new THREE.Vector3(0, 0, targetZ) });
   syncEditorNavigationCubeActiveView();
 }
 
 function renderStats() {
-  if (!dom.stats) return;
   const base = state.selectedBase;
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
   const cells = shape ? getShapeCells(shape, size) : [];
-  dom.stats.textContent = [
+  setElementText(dom.stats, [
     `mode       : éditeur catalogue`,
     `schéma     : ${state.catalog?.schema_version ?? 'inconnu'}`,
     `modèle     : ${base ? `${base.piece_label_fr} ${base.size_id}` : 'aucun'}`,
@@ -1786,7 +2392,7 @@ function renderStats() {
     `ops forme  : ${shape?.generation?.operations?.length ?? 0}`,
     `catalog    : ${state.selectedCatalogPieceId ?? 'n/a'}`,
     state.message ? `message    : ${state.message}` : '',
-  ].filter(Boolean).join('\n');
+  ].filter(Boolean).join('\n'));
 }
 
 function renderValidationReport() {
@@ -1807,7 +2413,7 @@ function renderValidationReport() {
   for (const error of report.errors) lines.push(`- ERROR: ${error}`);
   for (const warning of report.warnings) lines.push(`- WARN: ${warning}`);
   if (!report.errors.length && !report.warnings.length && !shapeReport.errors.length && !shapeReport.warnings.length) lines.push('OK.');
-  dom.validationReport.textContent = lines.join('\n');
+  setElementText(dom.validationReport, lines.join('\n'));
 }
 
 
@@ -1985,6 +2591,7 @@ function renderAll(redrawPreview = true) {
   renderRecipeEditor();
   renderValidationReport();
   renderStats();
+  applyEditorUserPreferences();
   if (redrawPreview) renderPreview();
 }
 
@@ -2038,15 +2645,184 @@ function pickVoxelFace(event) {
   const shape = selectedShape();
   const existing = (shape?.anchors ?? []).find((anchor) => anchorMatchesSelectedFace(anchor));
   state.selectedAnchorId = existing?.id ?? null;
-  dom.cellXInput.value = cell.x;
-  dom.cellYInput.value = cell.y;
-  dom.cellZInput.value = cell.z;
+  setCellInputValues(cell);
   renderAnchors();
   renderPreview();
 }
 
+function selectVoxelFace(cell, face = state.selectedFace?.face ?? 'top') {
+  const normalizedCell = {
+    x: Math.floor(Number(cell.x)),
+    y: Math.floor(Number(cell.y)),
+    z: Math.floor(Number(cell.z)),
+  };
+  state.selectedFace = {
+    cell: normalizedCell,
+    face,
+    position: anchorPositionForCellFace(normalizedCell, face),
+  };
+  const shape = selectedShape();
+  const existing = (shape?.anchors ?? []).find((anchor) => anchorMatchesSelectedFace(anchor));
+  state.selectedAnchorId = existing?.id ?? null;
+  setCellInputValues(normalizedCell);
+  renderAnchors();
+  renderPreview();
+}
+
+function resolveInitialCursorSelection(cells) {
+  const fromInputs = readCellInputValues();
+  if (Number.isFinite(fromInputs.x) && Number.isFinite(fromInputs.y) && Number.isFinite(fromInputs.z) && hasVisibleCell(cells, fromInputs)) {
+    const face = firstSelectableFaceForCell(cells, fromInputs, [state.selectedFace?.face].filter(Boolean));
+    if (face) return { cell: fromInputs, face };
+  }
+
+  for (const cell of sortCellsForInitialFace(cells)) {
+    const face = firstSelectableFaceForCell(cells, cell, ['top']);
+    if (face) return { cell: { x: cell.x, y: cell.y, z: cell.z }, face };
+  }
+
+  return null;
+}
+
+function keyboardDirectionForEvent(event) {
+  const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+  const code = typeof event.code === 'string' ? event.code : '';
+  for (const [direction, keys] of Object.entries(EDITOR_CELL_CURSOR_KEYS)) {
+    if (keys.has(code) || keys.has(key)) return direction;
+  }
+  return null;
+}
+
+function cursorDeltaForFace(direction, face) {
+  if (!direction) return null;
+
+  if (face === 'front' || face === 'back') {
+    return {
+      forward: { x: 0, y: 0, z: 1 },
+      backward: { x: 0, y: 0, z: -1 },
+      left: { x: -1, y: 0, z: 0 },
+      right: { x: 1, y: 0, z: 0 },
+    }[direction] ?? null;
+  }
+
+  if (face === 'left' || face === 'right') {
+    return {
+      forward: { x: 0, y: 0, z: 1 },
+      backward: { x: 0, y: 0, z: -1 },
+      left: { x: 0, y: -1, z: 0 },
+      right: { x: 0, y: 1, z: 0 },
+    }[direction] ?? null;
+  }
+
+  return {
+    forward: { x: 1, y: 0, z: 0 },
+    backward: { x: -1, y: 0, z: 0 },
+    left: { x: 0, y: -1, z: 0 },
+    right: { x: 0, y: 1, z: 0 },
+  }[direction] ?? null;
+}
+
+function resolveNextFaceSelection(cells, selectedFace, direction) {
+  if (!selectedFace) return null;
+  const delta = cursorDeltaForFace(direction, selectedFace.face);
+  if (!delta) return null;
+
+  const currentCell = selectedFace.cell;
+  const sameFaceCandidate = addCellVectors(currentCell, delta);
+  if (isSelectableCellFace(cells, sameFaceCandidate, selectedFace.face)) {
+    return { cell: sameFaceCandidate, face: selectedFace.face };
+  }
+
+  const edgeFace = faceForCellDelta(delta);
+  if (edgeFace && isSelectableCellFace(cells, currentCell, edgeFace)) {
+    return { cell: { ...currentCell }, face: edgeFace };
+  }
+
+  const currentNormal = getNormalForFace(selectedFace.face);
+  const stepUpCandidate = addCellVectors(addCellVectors(currentCell, delta), currentNormal);
+  const stepUpFace = edgeFace ? oppositeFace(edgeFace) : null;
+  if (stepUpFace && isSelectableCellFace(cells, stepUpCandidate, stepUpFace)) {
+    return { cell: stepUpCandidate, face: stepUpFace };
+  }
+
+  return null;
+}
+
+function moveSelectedFaceCursor(direction) {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size) return false;
+  ensureVoxelGeneration(shape);
+  const visibleCells = getVisibleShapeCells(shape, size);
+  if (!visibleCells.length) return false;
+
+  if (!state.selectedFace || !isSelectableCellFace(visibleCells, state.selectedFace.cell, state.selectedFace.face)) {
+    const initialSelection = resolveInitialCursorSelection(visibleCells);
+    if (!initialSelection) return false;
+    selectVoxelFace(initialSelection.cell, initialSelection.face);
+    return true;
+  }
+
+  const nextSelection = resolveNextFaceSelection(visibleCells, state.selectedFace, direction);
+  if (!nextSelection) return false;
+  selectVoxelFace(nextSelection.cell, nextSelection.face);
+  return true;
+}
+
+function isEditorTextInputTarget(target) {
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName) || Boolean(target?.isContentEditable);
+}
+
+function isAnchorToggleKey(event) {
+  return EDITOR_ANCHOR_TOGGLE_KEYS.has(event.code) || EDITOR_ANCHOR_TOGGLE_KEYS.has(event.key);
+}
+
+function bindEditorCellKeyboardNavigation() {
+  const handleKeyDown = (event) => {
+    if (event.key === 'Escape' && dom.baseReferenceModal?.classList.contains('open')) {
+      closeBaseReferenceModal();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === 'Escape' && dom.variantCreationModal?.classList.contains('open')) {
+      closeVariantCreationModal();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === 'Escape' && dom.editorUserConfigModal?.classList.contains('open')) {
+      setEditorUserConfigModalOpen(false);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (dom.editorUserConfigModal?.classList.contains('open')
+      || dom.baseReferenceModal?.classList.contains('open')
+      || dom.variantCreationModal?.classList.contains('open')) return;
+    if (event.ctrlKey || event.altKey || event.metaKey || isEditorTextInputTarget(event.target)) return;
+
+    if (isAnchorToggleKey(event)) {
+      if (toggleAnchorOnSelectedFace()) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+
+    const direction = keyboardDirectionForEvent(event);
+    if (!direction) return;
+    if (moveSelectedFaceCursor(direction)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  document.addEventListener('keydown', handleKeyDown, { capture: true });
+}
+
 function bindFacePicking() {
   renderer.domElement.addEventListener('pointerdown', (event) => {
+    renderer.domElement.focus({ preventScroll: true });
     if (event.button !== 0) return;
     pointerDown = { x: event.clientX, y: event.clientY };
   });
@@ -2060,54 +2836,86 @@ function bindFacePicking() {
 }
 
 function bindEvents() {
-  dom.shapeVariantSelect.addEventListener('change', () => {
+  bindElement(dom.openEditorUserConfigBtn, 'click', () => setEditorUserConfigModalOpen(true));
+  bindElement(dom.closeEditorUserConfigBtn, 'click', () => setEditorUserConfigModalOpen(false));
+  bindElement(dom.cancelEditorUserConfigBtn, 'click', () => setEditorUserConfigModalOpen(false));
+  bindElement(dom.resetEditorUserConfigBtn, 'click', resetEditorUserConfigForm);
+  bindElement(dom.saveEditorUserConfigBtn, 'click', saveEditorUserConfigForm);
+  bindElement(dom.editorShowDeleteButtonsToggle, 'change', persistEditorDeleteButtonPreference);
+  bindElement(dom.editorUserConfigModal, 'click', (event) => {
+    if (event.target === dom.editorUserConfigModal) setEditorUserConfigModalOpen(false);
+  });
+
+  bindElement(dom.shapeVariantSelect, 'change', () => {
     state.selectedShapeId = dom.shapeVariantSelect.value;
     state.selectedFace = null;
-    syncSelectedCatalogPieceWithShape();
+    const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === state.selectedShapeId);
+    if (piece) state.selectedCatalogPieceId = piece.id;
     renderAll();
   });
-  dom.catalogPieceSelect.addEventListener('change', () => {
-    state.selectedCatalogPieceId = dom.catalogPieceSelect.value || null;
+  bindElement(dom.catalogPieceSelect, 'change', () => {
+    state.selectedCatalogPieceId = dom.catalogPieceSelect.value;
     state.selectedFace = null;
     const piece = selectedPiece();
     if (piece) state.selectedShapeId = piece.shape_variant_id;
     renderAll();
   });
-  dom.createVariantBtn.addEventListener('click', createVariantFromBase);
-  dom.duplicateVariantBtn.addEventListener('click', duplicateVariant);
-  dom.deleteVariantBtn.addEventListener('click', deleteVariant);
-  dom.createCatalogPieceBtn.addEventListener('click', createCatalogPiece);
-  dom.deleteCatalogPieceBtn.addEventListener('click', deleteCatalogPiece);
-  dom.resetPreviewBtn.addEventListener('click', resetPreview);
-  dom.fitPreviewBtn.addEventListener('click', fitPreview);
-  dom.exportCatalogBtn.addEventListener('click', exportCatalog);
-  dom.saveDraftBtn?.addEventListener('click', saveDraft);
-  dom.publishAssemblyCatalogBtn?.addEventListener('click', publishCatalogToAssembly);
-  dom.controlShapeBtn?.addEventListener('click', controlSelectedShape);
-  dom.validateShapeBtn?.addEventListener('click', validateSelectedShapeStatus);
+  bindElement(dom.createVariantBtn, 'click', createVariantFromBase);
+  bindElement(dom.duplicateVariantBtn, 'click', duplicateVariant);
+  bindElement(dom.deleteVariantBtn, 'click', deleteVariant);
+  bindElement(dom.createCatalogPieceBtn, 'click', createCatalogPiece);
+  bindElement(dom.deleteCatalogPieceBtn, 'click', deleteCatalogPiece);
+  bindElement(dom.resetPreviewBtn, 'click', resetPreview);
+  bindElement(dom.fitPreviewBtn, 'click', fitPreview);
+  bindElement(dom.exportCatalogBtn, 'click', exportCatalog);
+  bindElement(dom.saveDraftBtn, 'click', saveDraft);
+  bindElement(dom.publishAssemblyCatalogBtn, 'click', publishCatalogToAssembly);
+  bindElement(dom.controlShapeBtn, 'click', controlSelectedShape);
+  bindElement(dom.validateShapeBtn, 'click', validateSelectedShapeStatus);
 
-  dom.shapeLabelInput.addEventListener('change', updateShapeIdentity);
-  dom.shapeFamilyInput.addEventListener('change', updateShapeIdentity);
-  dom.shapeStatusSelect.addEventListener('change', updateShapeIdentity);
-  dom.addCellBtn.addEventListener('click', () => setCell(true));
-  dom.removeCellBtn.addEventListener('click', () => setCell(false));
-  dom.resetFullBoxBtn.addEventListener('click', resetFullBox);
-  dom.clearCellsBtn.addEventListener('click', clearCells);
-  dom.roundFaceBtn.addEventListener('click', () => createOperationFromSelectedFace('round'));
-  dom.chamferFaceBtn.addEventListener('click', () => createOperationFromSelectedFace('chamfer'));
-  dom.deleteFaceOperationBtn.addEventListener('click', removeFaceOperation);
-  dom.operationListSelect.addEventListener('change', () => { state.selectedOperationIndex = Number(dom.operationListSelect.value); renderOperations(); });
+  bindElement(dom.shapeLabelInput, 'change', updateShapeIdentity);
+  bindElement(dom.shapeFamilyInput, 'change', updateShapeIdentity);
+  bindElement(dom.shapeStatusSelect, 'change', updateShapeIdentity);
+  bindElement(dom.addCellBtn, 'click', () => setCell(true));
+  bindElement(dom.removeCellBtn, 'click', () => setCell(false));
+  bindElement(dom.resetFullBoxBtn, 'click', resetFullBox);
+  bindElement(dom.clearCellsBtn, 'click', clearCells);
+  bindElement(dom.roundFaceBtn, 'click', () => createOperationFromSelectedFace('round'));
+  bindElement(dom.chamferFaceBtn, 'click', () => createOperationFromSelectedFace('chamfer'));
+  bindElement(dom.deleteFaceOperationBtn, 'click', removeFaceOperation);
+  bindElement(dom.operationListSelect, 'change', () => { state.selectedOperationIndex = Number(dom.operationListSelect?.value ?? -1); renderOperations(); });
 
-  dom.addAnchorBtn.addEventListener('click', addAnchor);
-  dom.deleteAnchorBtn.addEventListener('click', deleteAnchor);
-  dom.anchorListSelect.addEventListener('change', () => fillAnchorForm(dom.anchorListSelect.value));
+  bindElement(dom.addAnchorBtn, 'click', addAnchor);
+  bindElement(dom.deleteAnchorBtn, 'click', deleteAnchor);
+  bindElement(dom.anchorListSelect, 'change', () => fillAnchorForm(dom.anchorListSelect?.value));
 
-  dom.specProfileSelect.addEventListener('change', renderSpecEditor);
-  dom.recipeSelect.addEventListener('change', renderRecipeEditor);
-  dom.closeSpecModalBtn?.addEventListener('click', closeSpecModal);
-  dom.closeRecipeModalBtn?.addEventListener('click', closeRecipeModal);
-  dom.specModal?.addEventListener('click', (event) => { if (event.target === dom.specModal) closeSpecModal(); });
-  dom.recipeModal?.addEventListener('click', (event) => { if (event.target === dom.recipeModal) closeRecipeModal(); });
+  bindElement(dom.specProfileSelect, 'change', renderSpecEditor);
+  bindElement(dom.recipeSelect, 'change', renderRecipeEditor);
+  bindElement(dom.closeBaseReferenceModalBtn, 'click', closeBaseReferenceModal);
+  bindElement(dom.baseReferenceModal, 'click', (event) => { if (event.target === dom.baseReferenceModal) closeBaseReferenceModal(); });
+  bindElement(dom.createBaseReferenceBtn, 'click', createBaseReferenceFromModal);
+  bindElement(dom.closeVariantCreationModalBtn, 'click', closeVariantCreationModal);
+  bindElement(dom.variantCreationModal, 'click', (event) => { if (event.target === dom.variantCreationModal) closeVariantCreationModal(); });
+  bindElement(dom.newVariantFamilySelect, 'change', () => {
+    const familyId = dom.newVariantFamilySelect?.value;
+    const nextSizeId = getBaseGroupByFamilyId(familyId)?.sizes?.[0] ?? '';
+    fillVariantCreationSelectors(familyId, nextSizeId);
+    setElementText(dom.variantCreationModalContext, `${getFamilyLabel(familyId)}\n${nextSizeId}\nCréer une nouvelle variante.`);
+    state.variantModalSelection = getAvailableVariantIndexes(familyId, nextSizeId)[0] ?? null;
+    renderVariantIconGrid();
+  });
+  bindElement(dom.newVariantSizeSelect, 'change', () => {
+    const familyId = dom.newVariantFamilySelect?.value;
+    const sizeId = dom.newVariantSizeSelect?.value;
+    setElementText(dom.variantCreationModalContext, `${getFamilyLabel(familyId)}\n${sizeId}\nCréer une nouvelle variante.`);
+    state.variantModalSelection = getAvailableVariantIndexes(familyId, sizeId)[0] ?? null;
+    renderVariantIconGrid();
+  });
+  bindElement(dom.createVariantFromModalBtn, 'click', createVariantFromModal);
+  bindElement(dom.closeSpecModalBtn, 'click', closeSpecModal);
+  bindElement(dom.closeRecipeModalBtn, 'click', closeRecipeModal);
+  bindElement(dom.specModal, 'click', (event) => { if (event.target === dom.specModal) closeSpecModal(); });
+  bindElement(dom.recipeModal, 'click', (event) => { if (event.target === dom.recipeModal) closeRecipeModal(); });
 
   for (const button of document.querySelectorAll('.tab-button')) {
     button.addEventListener('click', () => {
@@ -2120,6 +2928,7 @@ function bindEvents() {
 
   renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
   bindFacePicking();
+  bindEditorCellKeyboardNavigation();
 }
 
 function migrateLegacyShapesForEditor() {
@@ -2155,6 +2964,8 @@ async function init() {
   rebuildRepo();
   migrateLegacyShapesForEditor();
   rebuildRepo();
+  ensureEditorUserConfigUi();
+  applyEditorUserPreferences();
   const firstGroup = getBaseGroups()[0];
   selectBaseModel(firstGroup, firstGroup.sizes[0]);
   bindEvents();
@@ -2164,5 +2975,5 @@ async function init() {
 
 init().catch((error) => {
   console.error(error);
-  if (dom.stats) dom.stats.textContent = String(error.message || error);
+  setElementText(dom.stats, String(error.message || error));
 });
