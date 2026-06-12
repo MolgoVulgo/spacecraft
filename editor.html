@@ -24,6 +24,7 @@
         <section class="control-block editor-catalog-actions-card">
           <label>Catalogue</label>
           <div class="button-grid compact editor-catalog-actions">
+            <button id="saveDraftBtn" type="button">Enregistrer maintenant</button>
             <button id="publishAssemblyCatalogBtn" type="button" class="primary">Publier vers Assembly</button>
             <button id="exportCatalogBtn" type="button" class="primary">Exporter catalogue</button>
           </div>
@@ -141,7 +142,7 @@
               <section id="validationTab" class="tab-panel editor-overlay-section" aria-label="Onglet validation">
                 <section class="control-block">
                   <label>Publication / rapport catalogue</label>
-                  <div class="editor-note">Aucun localStorage. “Publier vers Assembly” écrit public/data/4x3x1_catalog.json via le serveur dev ; en build statique, le JSON est téléchargé pour remplacement manuel.</div>
+                  <div class="editor-note">L’Editor autosauve vers public/data/editor_catalog.json. “Publier vers Assembly” génère public/data/assembly_catalog.json ; en build statique, un fichier JSON est téléchargé pour remplacement manuel.</div>
                   <label>Rapport</label>
                   <div id="validationReport" class="summary-box large-report"></div>
                 </section>

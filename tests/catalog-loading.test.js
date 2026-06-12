@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const CATALOG_FILE_URL = new URL('../public/data/4x3x1_catalog.json', import.meta.url);
+const CATALOG_FILE_URL = new URL('../public/data/assembly_catalog.json', import.meta.url);
 const ASSEMBLY_ICON_VARIANT_MIN = 1;
 const ASSEMBLY_ICON_VARIANT_MAX = 14;
 

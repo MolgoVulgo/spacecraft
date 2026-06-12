@@ -45,7 +45,7 @@ import {
   normalizeViewId,
 } from './view-controller.js';
 
-const CATALOG_URL = resolveRuntimePath('data/4x3x1_catalog.json');
+const CATALOG_URL = resolveRuntimePath('data/assembly_catalog.json');
 const DEFAULT_COLOR = '#d46a2c';
 const COLLISION_EPSILON = 1e-5;
 const DRAG_WORLD_LIMIT = 20000;
@@ -2948,7 +2948,7 @@ function renderCatalogPieceOptions() {
     if (dom.catalogPieceList) {
       const empty = document.createElement('div');
       empty.className = 'catalog-empty-state';
-      empty.textContent = 'Catalogue vide ou invalide. Publie un catalogue depuis editor.html ou vérifie public/data/4x3x1_catalog.json.';
+      empty.textContent = 'Catalogue vide ou invalide. Publie un catalogue depuis editor.html ou vérifie public/data/assembly_catalog.json.';
       dom.catalogPieceList.append(empty);
     }
     return;

@@ -5,27 +5,29 @@ Application web locale avec deux entrées séparées :
 - `index.html` : Assembly public, catalogue verrouillé.
 - `editor.html` : Éditeur interne catalogue, variantes, ancres, specs et recettes.
 
-## Source catalogue unique
+## Catalogues
 
-Le catalogue de référence est :
-
-```txt
-public/data/4x3x1_catalog.json
-```
-
-Assembly ne lit plus de copie `localStorage`. Il charge uniquement :
+Les sources sont séparées :
 
 ```txt
-/data/4x3x1_catalog.json
+public/data/editor_catalog.json    -> source Editor, autosauvé, draft/checked/validated
+public/data/assembly_catalog.json  -> sortie runtime Assembly, validated uniquement
 ```
 
-En mode dev, `Publier vers Assembly` dans l’éditeur écrit directement `public/data/4x3x1_catalog.json` via l’endpoint Vite :
+Assembly charge uniquement :
 
 ```txt
-PUT /api/catalog/write
+/data/assembly_catalog.json
 ```
 
-En build statique, l’écriture directe est impossible depuis le navigateur. Le bouton télécharge alors le JSON à replacer manuellement dans `public/data/4x3x1_catalog.json` avant rebuild.
+En mode dev, l’Editor écrit directement `public/data/editor_catalog.json` et `Publier vers Assembly` écrit `public/data/assembly_catalog.json` via les endpoints Vite :
+
+```txt
+PUT /api/editor-catalog/write
+PUT /api/assembly-catalog/write
+```
+
+En build statique, l’écriture directe est impossible depuis le navigateur. La publication télécharge alors `assembly_catalog.publish.json` pour remplacement manuel.
 
 ## Commandes
 
@@ -35,7 +37,7 @@ npm run dev
 npm run test
 npm run build
 npm run build:assembly
-node scripts/validate-catalog.mjs public/data/4x3x1_catalog.json
+node scripts/validate-catalog.mjs public/data/assembly_catalog.json
 ```
 
 Tests Python historiques uniquement :
@@ -59,12 +61,11 @@ editor.html
 
 ## Persistance locale des créations
 
-Le catalogue reste statique et versionné dans `public/data/4x3x1_catalog.json`.
-
 Les créations utilisateur sont maintenant stockées séparément :
 
 ```txt
-catalogue officiel      -> /data/4x3x1_catalog.json
+catalogue runtime       -> /data/assembly_catalog.json
+catalogue editor        -> /data/editor_catalog.json
 créations utilisateur   -> IndexedDB (base spacecraft_editor)
 import / export         -> fichiers .spacecraft.json
 ```

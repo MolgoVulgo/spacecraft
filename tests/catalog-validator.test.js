@@ -4,10 +4,20 @@ import { readFile } from 'node:fs/promises';
 
 import { validateCatalogData } from '../src/catalog-validator.js';
 
-test('catalog validator accepts the current catalog', async () => {
-  const raw = await readFile(new URL('../public/data/4x3x1_catalog.json', import.meta.url), 'utf8');
-  const catalog = JSON.parse(raw);
-  const report = validateCatalogData(catalog);
+async function readCatalog(path) {
+  const raw = await readFile(new URL(path, import.meta.url), 'utf8');
+  return JSON.parse(raw);
+}
+
+test('catalog validator accepts the current assembly catalog', async () => {
+  const report = validateCatalogData(await readCatalog('../public/data/assembly_catalog.json'));
+
+  assert.equal(report.valid, true);
+  assert.equal(report.errors.length, 0);
+});
+
+test('catalog validator accepts the current editor catalog', async () => {
+  const report = validateCatalogData(await readCatalog('../public/data/editor_catalog.json'));
 
   assert.equal(report.valid, true);
   assert.equal(report.errors.length, 0);

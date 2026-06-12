@@ -59,9 +59,17 @@ import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { NAVIGATION_CUBE_VIEW_IDS, createNavigationCubeViewApi } from './navigation-cube.js';
 import { resolveRuntimePath } from './runtime-paths.js';
 import { createEditorViewController } from './view-controller.js';
+import {
+  createEditorCatalogAutosaveController,
+  loadPendingEditorCatalogBackup,
+} from './editor-catalog-persistence.js';
+import { buildAssemblyCatalogFromEditorCatalog } from './assembly-catalog-publication.js';
+import { validateCatalogData, formatValidationIssues } from './catalog-validator.js';
 
-const CATALOG_URL = resolveRuntimePath('data/4x3x1_catalog.json');
-const CATALOG_WRITE_URL = '/api/catalog/write';
+const EDITOR_CATALOG_URL = resolveRuntimePath('data/editor_catalog.json');
+const ASSEMBLY_CATALOG_URL = resolveRuntimePath('data/assembly_catalog.json');
+const EDITOR_CATALOG_WRITE_URL = '/api/editor-catalog/write';
+const ASSEMBLY_CATALOG_WRITE_URL = '/api/assembly-catalog/write';
 const CELL_SCALE = 36;
 const ANCHOR_COLOR = 0xd82020;
 const CELL_COLOR = 0xd46a2c;
@@ -109,6 +117,13 @@ const state = {
   editorUserPreferences: loadEditorUserPreferences(),
   baseReferenceFamilyId: null,
   variantModalSelection: null,
+  editorSave: {
+    dirty: false,
+    saving: false,
+    lastSavedAt: null,
+    lastError: null,
+    autosaveTimer: null,
+  },
 };
 
 const dom = {
@@ -515,6 +530,7 @@ const cellPickTargets = [];
 const advancedPointPickTargets = [];
 const advancedEdgePickTargets = [];
 const shapeSnapshots = new Map();
+let editorCatalogAutosave = null;
 let pointerDown = null;
 
 const grid = new THREE.GridHelper(420, 42, 0x5c6370, 0x303640);
@@ -831,15 +847,27 @@ function renderBaseModels() {
           event.preventDefault();
           event.stopPropagation();
           setVariantEditingLocked(shape, !variantLocked);
-          if (state.selectedShapeId === shape.id) renderAll(false);
-          else renderBaseModels();
+          if (state.selectedShapeId !== shape.id) state.selectedShapeId = shape.id;
+          afterEditorCatalogMutation('variant_lock_toggled', { redrawPreview: false });
         });
 
         const variant = document.createElement('button');
         variant.type = 'button';
         variant.className = 'tree-variant-button catalog-tree-variant-select-btn';
         if (isBaseActive && shape.id === state.selectedShapeId) variant.classList.add('active');
-        variant.textContent = `↳ ${shape.label ?? shape.id}`;
+        const variantIconIndex = Number(shape?.metadata?.icon_index ?? shape?.variant_index);
+        if (Number.isInteger(variantIconIndex) && variantIconIndex > 0) {
+          const icon = document.createElement('img');
+          icon.className = 'variant-icon tree-variant-icon';
+          icon.alt = '';
+          icon.setAttribute('aria-hidden', 'true');
+          icon.src = resolveRuntimePath(`ui/shape-buttons/button_${pad2(variantIconIndex)}.png`);
+          variant.append(icon);
+        }
+        const label = document.createElement('span');
+        label.className = 'tree-variant-label';
+        label.textContent = `↳ ${shape.label ?? shape.id}`;
+        variant.append(label);
         variant.dataset.treeAction = 'select-variant';
         variant.addEventListener('click', () => {
           selectBaseModel(group, sizeId, { keepView: true });
@@ -1225,7 +1253,7 @@ function setCell(enabled) {
   if (enabled) cells.push({ x, y, z, enabled: true });
   shape.generation.cells = normalizeCells(cells, size);
   markShapeDirty(shape, enabled ? 'cell_added' : 'cell_removed');
-  renderAll();
+  afterEditorCatalogMutation(enabled ? 'cell_added' : 'cell_removed');
 }
 
 function isCellInside(size, x, y, z) {
@@ -1240,7 +1268,7 @@ function resetFullBox() {
   ensureVoxelGeneration(shape);
   shape.generation.cells = fullCells(getSize(shape.size_id));
   markShapeDirty(shape, 'cells_reset_full_box');
-  renderAll();
+  afterEditorCatalogMutation('cells_reset_full_box');
 }
 
 function clearCells() {
@@ -1250,7 +1278,7 @@ function clearCells() {
   ensureVoxelGeneration(shape);
   shape.generation.cells = [];
   markShapeDirty(shape, 'cells_cleared');
-  renderAll();
+  afterEditorCatalogMutation('cells_cleared');
 }
 
 function createDefaultAnchors(size) {
@@ -1341,11 +1369,9 @@ function createVariantFromBase() {
   };
   state.catalog.shape_variants ??= [];
   state.catalog.shape_variants.push(shape);
-  rebuildRepo();
   state.selectedShapeId = id;
   storeShapeSnapshot(id);
-  setMessage(`Variante créée : ${id} (${getVariantTypeLabel(variantType)}).`);
-  renderAll();
+  afterEditorCatalogMutation('shape_created', { message: `Variante créée : ${id} (${getVariantTypeLabel(variantType)}).` });
 }
 
 function getNextVariantIndex(sizeId) {
@@ -1367,11 +1393,9 @@ function duplicateVariant() {
   clone.status = 'draft';
   clone.metadata = { ...(clone.metadata ?? {}), source: 'catalog_editor_duplicate', duplicated_from: source.id };
   state.catalog.shape_variants.push(clone);
-  rebuildRepo();
   state.selectedShapeId = id;
   storeShapeSnapshot(id);
-  setMessage(`Variante dupliquée : ${id}.`);
-  renderAll();
+  afterEditorCatalogMutation('shape_duplicated', { message: `Variante dupliquée : ${id}.` });
 }
 
 function deleteVariantById(shapeId = state.selectedShapeId) {
@@ -1380,15 +1404,13 @@ function deleteVariantById(shapeId = state.selectedShapeId) {
   const linkedPieces = (state.catalog.catalog_pieces ?? []).filter((piece) => piece.shape_variant_id === shape.id);
   removeCatalogPiecesByIds(linkedPieces.map((piece) => piece.id));
   removeShapesByIds([shape.id]);
-  rebuildRepo();
   if (state.selectedShapeId === shape.id) {
     state.selectedShapeId = findShapesForBase(state.selectedBase?.family_id, shape.size_id)[0]?.id ?? null;
   }
   if (state.selectedCatalogPieceId && !getPiece(state.selectedCatalogPieceId)) {
     state.selectedCatalogPieceId = findCatalogPiecesForBase()[0]?.id ?? null;
   }
-  setMessage(`Variante supprimée : ${shape.id}.`);
-  renderAll();
+  afterEditorCatalogMutation('shape_deleted', { message: `Variante supprimée : ${shape.id}.` });
 }
 
 function deleteVariant() {
@@ -1468,10 +1490,8 @@ function createCatalogPiece() {
   };
   state.catalog.catalog_pieces ??= [];
   state.catalog.catalog_pieces.push(piece);
-  rebuildRepo();
   state.selectedCatalogPieceId = id;
-  setMessage(`Entrée catalogue créée : ${id}.`);
-  renderAll();
+  afterEditorCatalogMutation('catalog_piece_created', { message: `Entrée catalogue créée : ${id}.` });
 }
 
 function createCatalogPieceForShape({ familyId, sizeId, shapeId, pieceLabelFr, variantIndex, profileType = 'standard' }) {
@@ -1498,7 +1518,6 @@ function createCatalogPieceForShape({ familyId, sizeId, shapeId, pieceLabelFr, v
   };
   state.catalog.catalog_pieces ??= [];
   state.catalog.catalog_pieces.push(piece);
-  rebuildRepo();
   return piece;
 }
 
@@ -1543,7 +1562,6 @@ function deleteBaseReferenceByFamilyAndSize(familyId, sizeId, { confirm: askConf
   state.catalog.spec_profiles = (state.catalog.spec_profiles ?? []).filter((spec) => !specIds.has(spec.id));
   state.catalog.recipes = (state.catalog.recipes ?? []).filter((recipe) => !specIds.has(recipe.output_spec_profile_id));
   removeBaseGroupSize(familyId, sizeId);
-  rebuildRepo();
 
   if (state.selectedBase?.family_id === familyId && state.selectedBase?.size_id === sizeId) {
     state.selectedCatalogPieceId = null;
@@ -1552,15 +1570,15 @@ function deleteBaseReferenceByFamilyAndSize(familyId, sizeId, { confirm: askConf
     const group = [getBaseGroupByFamilyId(familyId), ...getBaseGroups()].find((item) => item?.sizes?.length) ?? null;
     const fallbackSizeId = group?.sizes?.[0] ?? null;
     if (group && fallbackSizeId) {
+      rebuildRepo();
       selectBaseModel(group, fallbackSizeId, { keepView: true });
-      setMessage(`Référence supprimée : ${getFamilyLabel(familyId)} ${sizeId}.`);
+      afterEditorCatalogMutation('base_reference_deleted', { message: `Référence supprimée : ${getFamilyLabel(familyId)} ${sizeId}.` });
       return true;
     }
     state.selectedBase = null;
   }
 
-  setMessage(`Référence supprimée : ${getFamilyLabel(familyId)} ${sizeId}.`);
-  renderAll();
+  afterEditorCatalogMutation('base_reference_deleted', { message: `Référence supprimée : ${getFamilyLabel(familyId)} ${sizeId}.` });
   return true;
 }
 
@@ -1568,7 +1586,6 @@ function deleteCatalogPieceById(pieceId = state.selectedCatalogPieceId) {
   const piece = getPiece(pieceId);
   if (!piece) return;
   removeCatalogPiecesByIds([piece.id]);
-  rebuildRepo();
   const remainingPieces = (state.catalog.catalog_pieces ?? [])
     .filter((item) => item.family_id === piece.family_id && item.size_id === piece.size_id)
     .sort((a, b) => a.label_fr.localeCompare(b.label_fr, 'fr'));
@@ -1578,8 +1595,7 @@ function deleteCatalogPieceById(pieceId = state.selectedCatalogPieceId) {
   } else if (state.selectedShapeId === piece.shape_variant_id) {
     state.selectedShapeId = findShapesForBase(piece.family_id, piece.size_id)[0]?.id ?? null;
   }
-  setMessage(`Entrée catalogue supprimée : ${piece.id}.`);
-  renderAll();
+  afterEditorCatalogMutation('catalog_piece_deleted', { message: `Entrée catalogue supprimée : ${piece.id}.` });
 }
 
 function deleteCatalogPiece() {
@@ -1721,7 +1737,7 @@ function updateShapeIdentity() {
   if (dom.shapeStatusSelect) shape.status = normalizeVariantStatus(dom.shapeStatusSelect.value);
   shape.metadata ??= {};
   shape.metadata.updated_at = new Date().toISOString();
-  renderAll(false);
+  afterEditorCatalogMutation('shape_identity_updated', { redrawPreview: false });
 }
 
 function renderOperations() {
@@ -1893,8 +1909,7 @@ function createOperationFromSelectedFace(type) {
   shape.generation.operations.push(op);
   markShapeDirty(shape, `operation_${type}_added`);
   state.selectedOperationIndex = shape.generation.operations.length - 1;
-  setMessage(`Correction ajoutée : ${describeShapeOperation(op)}.`);
-  renderAll();
+  afterEditorCatalogMutation(`operation_${type}_added`, { message: `Correction ajoutée : ${describeShapeOperation(op)}.` });
 }
 
 function removeFaceOperation() {
@@ -1919,8 +1934,7 @@ function removeFaceOperation() {
   const [removed] = operations.splice(index, 1);
   markShapeDirty(shape, 'operation_removed');
   state.selectedOperationIndex = null;
-  setMessage(`Correction supprimée : ${describeShapeOperation(removed)}.`);
-  renderAll();
+  afterEditorCatalogMutation('operation_removed', { message: `Correction supprimée : ${describeShapeOperation(removed)}.` });
 }
 
 function renderVariantFaceSummary() {
@@ -2058,8 +2072,7 @@ function addAnchor() {
   anchors.push(anchor);
   markShapeDirty(shape, 'anchor_added');
   state.selectedAnchorId = id;
-  setMessage(`Ancre ajoutée : ${id}.`);
-  renderAll();
+  afterEditorCatalogMutation('anchor_added', { message: `Ancre ajoutée : ${id}.` });
 }
 
 function deleteAnchor() {
@@ -2078,8 +2091,7 @@ function deleteAnchor() {
   shape.anchors = anchors.filter((anchor) => anchor.id !== target.id);
   markShapeDirty(shape, 'anchor_removed');
   state.selectedAnchorId = null;
-  setMessage(`Ancre supprimée : ${target.id}.`);
-  renderAll();
+  afterEditorCatalogMutation('anchor_removed', { message: `Ancre supprimée : ${target.id}.` });
 }
 
 function toggleAnchorOnSelectedFace() {
@@ -2169,6 +2181,7 @@ function renderSpecEditor() {
       const raw = input.value.trim();
       value.value = raw === '' ? null : Number(raw);
       value.status = value.value === null ? 'unknown' : 'draft';
+      editorCatalogAutosave?.schedule(`spec_${fieldId}_changed`);
       renderStats();
       renderValidationReport();
     });
@@ -2218,6 +2231,7 @@ function renderRecipeEditor() {
       setNested(recipe, path, value);
       if (path === 'cost.value') recipe.cost.status = value === null ? 'unknown' : 'draft';
       if (path === 'duration.value') recipe.duration.status = value === null ? 'unknown' : 'draft';
+      editorCatalogAutosave?.schedule(`recipe_${path.replaceAll('.', '_')}_changed`);
       renderValidationReport();
     });
     row.append(label, input);
@@ -2231,6 +2245,7 @@ function renderRecipeEditor() {
       const parsed = JSON.parse(area.value);
       recipe.ingredients = Array.isArray(parsed) ? parsed : [];
       area.classList.remove('invalid');
+      editorCatalogAutosave?.schedule('recipe_ingredients_changed');
       renderValidationReport();
     } catch {
       area.classList.add('invalid');
@@ -2310,7 +2325,6 @@ function ensureSizeDefinition(length, width, height) {
   };
   state.catalog.sizes ??= [];
   state.catalog.sizes.push(size);
-  rebuildRepo();
   return size;
 }
 
@@ -2355,7 +2369,6 @@ function createBaseReferenceFromModal() {
   };
   state.catalog.shape_variants ??= [];
   state.catalog.shape_variants.push(shape);
-  rebuildRepo();
   storeShapeSnapshot(shape.id);
   const piece = createCatalogPieceForShape({
     familyId,
@@ -2365,11 +2378,11 @@ function createBaseReferenceFromModal() {
     variantIndex: 1,
   });
   closeBaseReferenceModal();
+  rebuildRepo();
   selectBaseModel(group, sizeId, { keepView: true });
   state.selectedShapeId = shape.id;
   state.selectedCatalogPieceId = piece.id;
-  setMessage(`Référence créée : ${group.piece_label_fr} ${sizeId}.`);
-  renderAll();
+  afterEditorCatalogMutation('base_reference_created', { message: `Référence créée : ${group.piece_label_fr} ${sizeId}.` });
 }
 
 function getAvailableVariantIndexes(familyId, sizeId, maxIndex = 14) {
@@ -2483,7 +2496,6 @@ function createVariantFromModal() {
   state.catalog.shape_variants ??= [];
   state.catalog.shape_variants.push(shape);
   storeShapeSnapshot(shape.id);
-  rebuildRepo();
   const piece = createCatalogPieceForShape({
     familyId,
     sizeId,
@@ -2492,11 +2504,11 @@ function createVariantFromModal() {
     variantIndex,
   });
   closeVariantCreationModal();
+  rebuildRepo();
   selectBaseModel(group, sizeId, { keepView: true });
   state.selectedShapeId = shape.id;
   state.selectedCatalogPieceId = piece.id;
-  setMessage(`Variante créée : ${shape.id}.`);
-  renderAll();
+  afterEditorCatalogMutation('shape_created_modal', { message: `Variante créée : ${shape.id}.` });
 }
 
 
@@ -2896,6 +2908,9 @@ function renderStats() {
     `ancres     : ${shape?.anchors?.length ?? 0}`,
     `ops forme  : ${shape?.generation?.operations?.length ?? 0}`,
     `catalog    : ${state.selectedCatalogPieceId ?? 'n/a'}`,
+    `save       : ${state.editorSave.saving ? 'saving' : state.editorSave.dirty ? 'dirty' : 'clean'}`,
+    state.editorSave.lastSavedAt ? `saved_at   : ${state.editorSave.lastSavedAt}` : '',
+    state.editorSave.lastError ? `save_error : ${state.editorSave.lastError.message}` : '',
     state.message ? `message    : ${state.message}` : '',
   ].filter(Boolean).join('\n'));
 }
@@ -2908,7 +2923,8 @@ function renderValidationReport() {
   lines.push(`État variante : ${shape?.status ?? 'n/a'}`);
   lines.push('');
   lines.push('Workflow : draft → checked → validated');
-  lines.push('Enregistrer brouillon : télécharge un JSON draft. Publier vers Assembly : écrit public/data/4x3x1_catalog.json via le serveur dev, sinon télécharge le JSON à remplacer.');
+  lines.push('Enregistrer maintenant : écrit public/data/editor_catalog.json via le serveur dev; en fallback, garde un brouillon local temporaire.');
+  lines.push('Publier vers Assembly : génère public/data/assembly_catalog.json avec variantes validated uniquement.');
   lines.push('');
   lines.push(`Contrôle variante sélectionnée : ${shapeReport.errors.length} erreur(s), ${shapeReport.warnings.length} avertissement(s)`);
   for (const error of shapeReport.errors) lines.push(`- ERROR variante: ${error}`);
@@ -3004,7 +3020,12 @@ function validateSelectedShape() {
 }
 
 function getCatalogFileName(suffix = '') {
-  const base = '4x3x1_catalog';
+  const base = 'editor_catalog';
+  return suffix ? `${base}.${suffix}.json` : `${base}.json`;
+}
+
+function getAssemblyCatalogFileName(suffix = '') {
+  const base = 'assembly_catalog';
   return suffix ? `${base}.${suffix}.json` : `${base}.json`;
 }
 
@@ -3044,7 +3065,7 @@ function downloadCatalogFile(filename = getCatalogFileName(), payload = state.ca
 }
 
 async function writeCatalogToProjectFile(payload = state.catalog) {
-  const response = await fetch(CATALOG_WRITE_URL, {
+  const response = await fetch(EDITOR_CATALOG_WRITE_URL, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -3058,43 +3079,81 @@ async function writeCatalogToProjectFile(payload = state.catalog) {
   return response.json();
 }
 
-function saveDraft() {
-  const shape = selectedShape();
-  if (shape) {
-    shape.status = 'draft';
-    markShapeDirty(shape, 'draft_saved');
+async function writeAssemblyCatalogToProjectFile(payload) {
+  const response = await fetch(ASSEMBLY_CATALOG_WRITE_URL, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(detail || `HTTP ${response.status}`);
   }
-  const compiled = buildCompiledCatalogOutput();
-  if (!compiled.ok) {
-    setMessage(`Export brouillon refusé : ${compiled.errors.join(' | ')}`);
-    renderAll(false);
-    return;
+
+  return response.json();
+}
+
+function syncEditorSaveState(snapshot = {}) {
+  state.editorSave = {
+    ...state.editorSave,
+    ...snapshot,
+  };
+}
+
+function afterEditorCatalogMutation(reason, options = {}) {
+  rebuildRepo();
+  editorCatalogAutosave?.schedule(reason);
+  const message = options.message ?? null;
+  if (message) setMessage(message);
+  renderAll(options.redrawPreview ?? true);
+}
+
+async function saveEditorCatalogNow(reason = 'manual_save') {
+  if (!editorCatalogAutosave) return { ok: false, error: new Error('Autosave indisponible.') };
+  const result = await editorCatalogAutosave.saveNow(reason);
+  if (result.ok) {
+    setMessage(`Catalogue éditeur enregistré : public/data/editor_catalog.json (${reason}).`);
+  } else {
+    setMessage(`Enregistrement éditeur local échoué : ${result.error.message}`);
   }
-  downloadCatalogFile(getCatalogFileName('draft'), compiled.catalog);
-  setMessage('Brouillon exporté en fichier JSON. Aucun stockage navigateur utilisé.');
-  renderAll();
+  renderAll(false);
+  return result;
+}
+
+async function saveDraft() {
+  await saveEditorCatalogNow('manual_save');
 }
 
 async function publishCatalogToAssembly() {
+  await saveEditorCatalogNow('before_publish');
   const compiled = buildCompiledCatalogOutput();
   if (!compiled.ok) {
     setMessage(`Publication Assembly refusée : ${compiled.errors.join(' | ')}`);
     renderAll(false);
     return;
   }
-  const validation = validateCatalog(compiled.catalog);
-  if (validation.errors.length) {
-    setMessage(`Publication Assembly refusée : ${validation.errors.length} erreur(s) catalogue.`);
+
+  const publication = buildAssemblyCatalogFromEditorCatalog(compiled.catalog);
+  if (!publication.report.publishable) {
+    setMessage('Publication Assembly refusée : aucune variante validée publiable.');
+    renderAll(false);
+    return;
+  }
+
+  const validation = validateCatalogData(publication.catalog);
+  if (!validation.valid) {
+    setMessage(`Publication Assembly refusée : ${formatValidationIssues(validation.errors).join(' | ')}`);
     renderValidationReport();
     return;
   }
 
   try {
-    const result = await writeCatalogToProjectFile(compiled.catalog);
-    setMessage(`Catalogue écrit dans ${result.path ?? 'public/data/4x3x1_catalog.json'} : ${state.catalog.catalog_pieces?.length ?? 0} entrée(s), ${state.catalog.shape_variants?.length ?? 0} variante(s). Recharge Assembly pour lire ce fichier.`);
+    const result = await writeAssemblyCatalogToProjectFile(publication.catalog);
+    setMessage(`Assembly publié : ${publication.report.publishedPieces} pièce(s), ${publication.report.publishedShapes} variante(s). Ignoré : ${publication.report.skippedDraft} draft, ${publication.report.skippedChecked} checked, ${publication.report.skippedInvalid} invalid. Fichier : ${result.path ?? 'public/data/assembly_catalog.json'}.`);
   } catch (error) {
-    downloadCatalogFile(getCatalogFileName('publish'), compiled.catalog);
-    setMessage(`Écriture directe indisponible. Catalogue téléchargé : remplace public/data/4x3x1_catalog.json manuellement. Détail : ${error.message}`);
+    downloadCatalogFile(getAssemblyCatalogFileName('publish'), publication.catalog);
+    setMessage(`Écriture directe Assembly indisponible. Catalogue téléchargé : remplace public/data/assembly_catalog.json manuellement. Détail : ${error.message}`);
   }
 
   renderAll(false);
@@ -3106,14 +3165,13 @@ function controlSelectedShape() {
   const report = validateSelectedShape();
   if (report.errors.length) {
     shape.status = 'draft';
-    setMessage(`Contrôle refusé : ${report.errors.length} erreur(s).`);
+    afterEditorCatalogMutation('shape_checked_failed', { message: `Contrôle refusé : ${report.errors.length} erreur(s).`, redrawPreview: false });
   } else {
     shape.status = 'checked';
     shape.metadata ??= {};
     shape.metadata.checked_at = new Date().toISOString();
-    setMessage(`Contrôle OK : ${report.warnings.length} avertissement(s).`);
+    afterEditorCatalogMutation('shape_checked', { message: `Contrôle OK : ${report.warnings.length} avertissement(s).`, redrawPreview: false });
   }
-  renderAll();
 }
 
 function validateSelectedShapeStatus() {
@@ -3122,14 +3180,13 @@ function validateSelectedShapeStatus() {
   const report = validateSelectedShape();
   if (report.errors.length) {
     shape.status = 'draft';
-    setMessage(`Validation refusée : ${report.errors.length} erreur(s).`);
+    afterEditorCatalogMutation('shape_validated_failed', { message: `Validation refusée : ${report.errors.length} erreur(s).`, redrawPreview: false });
   } else {
     shape.status = 'validated';
     shape.metadata ??= {};
     shape.metadata.validated_at = new Date().toISOString();
-    setMessage('Variante validée. Export catalogue pour écrire le JSON final.');
+    afterEditorCatalogMutation('shape_validated', { message: 'Variante validée. Publie vers Assembly pour générer le catalogue runtime.', redrawPreview: false });
   }
-  renderAll();
 }
 
 function renderAll(redrawPreview = true) {
@@ -3173,8 +3230,8 @@ function exportCatalog() {
     renderAll(false);
     return;
   }
-  downloadJson('spacecraft_rich_catalog.json', compiled.catalog);
-  setMessage('Catalogue compilé exporté.');
+  downloadJson('editor_catalog.export.json', compiled.catalog);
+  setMessage('Catalogue éditeur exporté.');
   renderAll(false);
 }
 
@@ -3869,10 +3926,44 @@ function animate() {
   renderer.render(scene, camera);
 }
 
+async function loadCatalogJson(url, options = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) throw new Error(`Impossible de charger ${url}`);
+  return response.json();
+}
+
+function selectInitialEditorCatalog(fileCatalog, pendingBackup) {
+  if (!pendingBackup?.catalog) return { catalog: fileCatalog, restoredPendingBackup: false };
+  const fileTime = Date.parse(fileCatalog?.updated_at ?? fileCatalog?.metadata?.updated_at ?? '') || 0;
+  const backupTime = Date.parse(pendingBackup.savedAt ?? '') || 0;
+  if (backupTime <= fileTime) return { catalog: fileCatalog, restoredPendingBackup: false };
+  return { catalog: pendingBackup.catalog, restoredPendingBackup: true };
+}
+
+async function loadEditorCatalog() {
+  try {
+    const fileCatalog = await loadCatalogJson(EDITOR_CATALOG_URL, { cache: 'no-store' });
+    return { catalog: fileCatalog, bootstrappedFromAssembly: false };
+  } catch (error) {
+    const fallbackCatalog = await loadCatalogJson(ASSEMBLY_CATALOG_URL, { cache: 'no-store' });
+    return { catalog: fallbackCatalog, bootstrappedFromAssembly: true, bootstrapError: error };
+  }
+}
+
 async function init() {
-  const response = await fetch(CATALOG_URL);
-  if (!response.ok) throw new Error(`Impossible de charger ${CATALOG_URL}`);
-  state.catalog = await response.json();
+  editorCatalogAutosave = createEditorCatalogAutosaveController({
+    getCatalog: () => state.catalog,
+    writeCatalog: (catalog) => writeCatalogToProjectFile(catalog),
+    onStateChange: (snapshot) => {
+      syncEditorSaveState(snapshot);
+      renderStats();
+    },
+  });
+
+  const loadResult = await loadEditorCatalog();
+  const pendingBackup = loadPendingEditorCatalogBackup();
+  const selectedCatalog = selectInitialEditorCatalog(loadResult.catalog, pendingBackup);
+  state.catalog = selectedCatalog.catalog;
   if (!Array.isArray(state.catalog.catalog_pieces)) throw new Error('Catalogue riche requis : catalog_pieces absent.');
   rebuildRepo();
   migrateLegacyShapesForEditor();
@@ -3883,6 +3974,13 @@ async function init() {
   selectBaseModel(firstGroup, firstGroup.sizes[0]);
   bindEvents();
   mountEditorNavigationCube();
+  if (loadResult.bootstrappedFromAssembly) {
+    setMessage('Catalogue éditeur initialisé depuis Assembly.');
+    await saveEditorCatalogNow('bootstrap_from_assembly');
+  } else if (selectedCatalog.restoredPendingBackup) {
+    setMessage('Brouillon local restauré après échec d’écriture précédent.');
+    renderAll(false);
+  }
   animate();
 }
 

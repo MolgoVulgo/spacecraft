@@ -1876,8 +1876,8 @@ canvas.catalog-drop-target {
 }
 
 .tree-variant-button .variant-icon {
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
   flex: 0 0 auto;
 }
