@@ -57,12 +57,7 @@ async function loadEditorPanelHarness() {
   const panel = { hidden: false };
   const summary = { textContent: '' };
   const noopInput = { checked: false, disabled: false };
-  const toggleBtn = {
-    textContent: '',
-    classList: {
-      toggle() {},
-    },
-  };
+  const selectionSummary = { textContent: '' };
 
   const context = {
     module: { exports: {} },
@@ -77,14 +72,15 @@ async function loadEditorPanelHarness() {
       },
     },
     state: {
-      editorMode: 'simple',
+      editorMode: 'advanced',
       selectedAdvancedPointIds: [],
+      selectedEditableEdgeIds: [],
+      selectedEditableEdgeShapeId: null,
       selectedCatalogPieceId: null,
       selectedBase: null,
       catalog: null,
     },
     dom: {
-      editorModeToggleBtn: toggleBtn,
       advancedPieceDisplayPieceInput: { ...noopInput },
       advancedPieceDisplayPointsInput: { ...noopInput },
       advancedDraftOperationCustomFaceInput: { ...noopInput },
@@ -94,9 +90,18 @@ async function loadEditorPanelHarness() {
       editorAdvancedModePanel: panel,
       editorAdvancedControls: { hidden: false },
       editorAdvancedModeSummary: summary,
+      editableEdgeSelectionSummary: selectionSummary,
+      chamferSelectedEdgesBtn: { disabled: false },
+      filletSelectedEdgesBtn: { disabled: false },
+      clearEditableEdgeSelectionBtn: { disabled: false },
+      advancedDraftFaceListSelect: { disabled: false },
+      advancedCustomFaceOperationListSelect: { disabled: false },
+      commitAdvancedDraftFaceBtn: { disabled: false },
+      deleteAdvancedDraftFaceBtn: { disabled: false },
+      deleteAdvancedCustomFaceOperationBtn: { disabled: false },
     },
     selectedShape: () => context.currentShape,
-    editorIsAdvancedMode: () => false,
+    editorIsAdvancedMode: () => true,
     getSize: () => ({ dimensions: { length: 4, width: 3, height: 1 } }),
     summarizeEditorPointGrid: () => ({ total: 0 }),
     summarizeAdvancedPointSelection: () => ({ count: 0 }),
@@ -106,6 +111,8 @@ async function loadEditorPanelHarness() {
     deriveAdvancedModePreviewSummary: () => 'summary',
     getActiveAdvancedDraftEdges: () => [],
     getActiveAdvancedDraftFaces: () => [],
+    getEditableEdgesForShape: () => [{ id: 'top-front' }, { id: 'top-left' }],
+    isVariantEditingLocked: (shape) => shape?.variant_index === 1,
     renderAdvancedFaceOperationControls: () => {},
     setElementText(element, text) {
       element.textContent = text;
@@ -114,11 +121,11 @@ async function loadEditorPanelHarness() {
   };
 
   vm.runInNewContext(script, context);
-  return { ...context.module.exports, context, panel, protectedControls };
+  return { ...context.module.exports, context, panel, protectedControls, selectionSummary };
 }
 
 test('editor advanced mode panel visibility depends only on selected variant editability', async () => {
-  const { applyEditorUserPreferences, renderEditorModeUi, context, panel, protectedControls } = await loadEditorPanelHarness();
+  const { applyEditorUserPreferences, renderEditorModeUi, context, panel, protectedControls, selectionSummary } = await loadEditorPanelHarness();
 
   context.currentShape = { id: 'shape_v01', variant_index: 1, metadata: {} };
   renderEditorModeUi();
@@ -127,6 +134,8 @@ test('editor advanced mode panel visibility depends only on selected variant edi
   context.currentShape = { id: 'shape_v02', variant_index: 2, metadata: { editor_variant_locked: false } };
   renderEditorModeUi();
   assert.equal(panel.hidden, false);
+  assert.equal(context.dom.editorAdvancedControls.hidden, false);
+  assert.equal(selectionSummary.textContent, 'Aucune arête sélectionnée.');
 
   applyEditorUserPreferences({ showDeleteButtons: false });
   assert.equal(panel.hidden, false);

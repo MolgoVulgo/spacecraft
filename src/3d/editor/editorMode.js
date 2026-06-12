@@ -33,12 +33,12 @@ export function deriveAdvancedModePreviewSummary({
   if (!shape || !size?.dimensions) return 'Aucune variante sélectionnée.';
   const dimensions = size.dimensions;
   return [
-    `mode       : avancé (preview)`,
+    `mode       : édition géométrique`,
     `variante   : ${shape.id}`,
     `catalog    : ${selectedCatalogPieceId ?? 'aucune pièce liée'}`,
     `base       : ${selectedBase ? `${selectedBase.family_id} ${selectedBase.size_id}` : 'aucune'}`,
     `bbox       : ${dimensions.length}×${dimensions.width}×${dimensions.height}`,
-    `grid       : ${subgridUnit} (preview inactive)`,
+    `grid       : ${subgridUnit}`,
     pointGridSummary ? `points     : ${pointGridSummary.total} (${pointGridSummary.boundaryCount} surface, ${pointGridSummary.interiorCount} internes)` : '',
     pointSelectionSummary ? `sélection : ${pointSelectionSummary.count} point(s)` : '',
     `lignes     : ${edgeCount}`,

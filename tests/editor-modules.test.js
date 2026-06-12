@@ -126,7 +126,7 @@ test('editor mode defaults to simple and only advanced matches advanced mode', (
   assert.equal(isEditorAdvancedMode('simple'), false);
 });
 
-test('advanced mode summary is read-only and does not depend on catalog mutation', () => {
+test('geometry summary is read-only and does not depend on catalog mutation', () => {
   const summary = deriveAdvancedModePreviewSummary({
     shape: { id: 'shape_steel_4x3x1_v01', generation: { mode: 'voxel_grid' } },
     size: { dimensions: { length: 4, width: 3, height: 1 } },
@@ -138,9 +138,9 @@ test('advanced mode summary is read-only and does not depend on catalog mutation
     faceCount: 1,
   });
 
-  assert.match(summary, /mode       : avancé \(preview\)/);
+  assert.match(summary, /mode       : édition géométrique/);
   assert.match(summary, /variante   : shape_steel_4x3x1_v01/);
-  assert.match(summary, /grid       : 0.5 \(preview inactive\)/);
+  assert.match(summary, /grid       : 0.5/);
   assert.match(summary, /points     : 189 \(146 surface, 43 internes\)/);
   assert.match(summary, /lignes     : 2/);
   assert.match(summary, /faces      : 1/);

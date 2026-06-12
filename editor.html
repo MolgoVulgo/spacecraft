@@ -41,12 +41,11 @@
       <main class="editor-main">
         <section class="editor-viewport-wrap">
           <canvas id="editorViewer"></canvas>
+          <div id="editorGeometryContextMenu" class="editor-context-menu" hidden></div>
           <div id="selectedBaseSummary" class="summary-box selected-summary editor-summary-overlay"></div>
           <section id="editorAdvancedModePanel" class="control-block editor-advanced-mode-panel">
             <div class="editor-overlay-header-card">
-              <div class="editor-overlay-toolbar">
-                <button id="editorModeToggleBtn" class="editor-mode-toggle" type="button">Mode normal</button>
-              </div>
+              <label>Édition géométrique</label>
               <div class="editor-overlay-tabs" role="tablist" aria-label="Navigation overlay editor">
                 <button class="tab-button active" type="button" data-tab="shapeTab">Forme</button>
                 <button class="tab-button" type="button" data-tab="anchorsTab">Ancres</button>
@@ -61,7 +60,7 @@
               </div>
             </div>
             <div class="editor-overlay-content">
-              <section id="editorAdvancedControls" class="editor-overlay-section editor-overlay-section-advanced" hidden>
+              <section id="editorAdvancedControls" class="editor-overlay-section editor-overlay-section-advanced">
                 <div id="editorAdvancedModeSummary" class="summary-box">Aucune variante sélectionnée.</div>
                 <div class="editor-advanced-visibility-bar">
                   <span>Affichage</span>
@@ -73,6 +72,13 @@
                     <input id="advancedPieceDisplayPointsInput" type="radio" name="advancedPieceDisplayMode" value="points" />
                     <span>Points</span>
                   </label>
+                </div>
+                <label class="sub-label">Arêtes sélectionnées</label>
+                <div id="editableEdgeSelectionSummary" class="summary-box">Aucune arête sélectionnée.</div>
+                <div class="button-grid compact">
+                  <button id="chamferSelectedEdgesBtn" type="button">Chanfrein</button>
+                  <button id="filletSelectedEdgesBtn" type="button">Arrondi</button>
+                  <button id="clearEditableEdgeSelectionBtn" type="button">Effacer sélection</button>
                 </div>
                 <label class="sub-label">Faces draft</label>
                 <select id="advancedDraftFaceListSelect" size="4"></select>
@@ -102,7 +108,7 @@
                   <button id="commitAdvancedDraftFaceBtn" type="button" class="primary">Créer opération depuis face</button>
                   <button id="deleteAdvancedDraftFaceBtn" type="button">Supprimer face draft</button>
                 </div>
-                <label class="sub-label">Opérations avancées</label>
+                <label class="sub-label">Opérations géométriques</label>
                 <select id="advancedCustomFaceOperationListSelect" size="4"></select>
                 <div class="button-grid compact">
                   <button id="deleteAdvancedCustomFaceOperationBtn" type="button">Supprimer opération</button>

@@ -20796,7 +20796,9 @@
         "based_on": "steel:4x3x1",
         "variant_type": "block",
         "icon_index": 2,
-        "notes": []
+        "notes": [],
+        "updated_at": "2026-06-12T19:33:40.173Z",
+        "last_edit_reason": "operation_removed"
       }
     }
   ],

@@ -14,6 +14,17 @@ import {
   normalizeEditorMode,
   switchEditorModeState,
 } from './3d/editor/editorMode.js';
+import {
+  createEdgeChamferOperation,
+  createEdgeFilletOperation,
+  deriveEditableBBoxEdges,
+  normalizeEdgeCorrectionOperations,
+  selectEditableEdge,
+  upsertEdgeCorrection,
+  validateEdgeChamferOperation,
+  validateEdgeCorrectionExclusivity,
+  validateEdgeFilletOperation,
+} from './3d/editor/editorGeometryEdges.js';
 import { generateEditorPointGrid, summarizeEditorPointGrid } from './3d/editor/editorPointGrid.js';
 import {
   clearAdvancedPointSelection,
@@ -59,12 +70,15 @@ import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { NAVIGATION_CUBE_VIEW_IDS, createNavigationCubeViewApi } from './navigation-cube.js';
 import { resolveRuntimePath } from './runtime-paths.js';
 import { createEditorViewController } from './view-controller.js';
+import { createEditorInteractionController } from './editor-interaction-controller.js';
+import { createEmptyEditorSelectionState, getEditorContextActions, getPrimitiveKey } from './editor-interaction-state.js';
 import {
   createEditorCatalogAutosaveController,
   loadPendingEditorCatalogBackup,
 } from './editor-catalog-persistence.js';
 import { buildAssemblyCatalogFromEditorCatalog } from './assembly-catalog-publication.js';
 import { validateCatalogData, formatValidationIssues } from './catalog-validator.js';
+import { loadUserSettings } from './user-settings.js';
 
 const EDITOR_CATALOG_URL = resolveRuntimePath('data/editor_catalog.json');
 const ASSEMBLY_CATALOG_URL = resolveRuntimePath('data/assembly_catalog.json');
@@ -92,11 +106,12 @@ const ADVANCED_PIECE_DISPLAY_MODES = {
   PIECE: 'piece',
   POINTS: 'points',
 };
+const EDITOR_CAMERA_SETTINGS = loadUserSettings().camera;
 
 const state = {
   catalog: null,
   repo: null,
-  editorMode: EDITOR_MODES.SIMPLE,
+  editorMode: EDITOR_MODES.ADVANCED,
   selectedBase: null,
   selectedShapeId: null,
   selectedCatalogPieceId: null,
@@ -105,6 +120,8 @@ const state = {
   selectedOperationIndex: null,
   selectedAdvancedPointIds: [],
   selectedAdvancedEdgeIds: [],
+  selectedEditableEdgeIds: [],
+  selectedEditableEdgeShapeId: null,
   selectedAdvancedDraftFaceId: null,
   selectedAdvancedCustomFaceOperationId: null,
   advancedDraftOperationType: 'custom_face',
@@ -127,10 +144,13 @@ const state = {
 };
 
 const dom = {
-  editorModeToggleBtn: document.querySelector('#editorModeToggleBtn'),
   editorAdvancedModePanel: document.querySelector('#editorAdvancedModePanel'),
   editorAdvancedControls: document.querySelector('#editorAdvancedControls'),
   editorAdvancedModeSummary: document.querySelector('#editorAdvancedModeSummary'),
+  editableEdgeSelectionSummary: document.querySelector('#editableEdgeSelectionSummary'),
+  chamferSelectedEdgesBtn: document.querySelector('#chamferSelectedEdgesBtn'),
+  filletSelectedEdgesBtn: document.querySelector('#filletSelectedEdgesBtn'),
+  clearEditableEdgeSelectionBtn: document.querySelector('#clearEditableEdgeSelectionBtn'),
   advancedPieceDisplayPieceInput: document.querySelector('#advancedPieceDisplayPieceInput'),
   advancedPieceDisplayPointsInput: document.querySelector('#advancedPieceDisplayPointsInput'),
   advancedDraftFaceListSelect: document.querySelector('#advancedDraftFaceListSelect'),
@@ -162,6 +182,7 @@ const dom = {
   stats: document.querySelector('#editorStats'),
   canvas: document.querySelector('#editorViewer'),
   viewportWrap: document.querySelector('.editor-viewport-wrap'),
+  editorGeometryContextMenu: document.querySelector('#editorGeometryContextMenu'),
   openEditorUserConfigBtn: document.querySelector('#openEditorUserConfigBtn'),
   editorUserConfigModal: document.querySelector('#editorUserConfigModal'),
   closeEditorUserConfigBtn: document.querySelector('#closeEditorUserConfigBtn'),
@@ -263,12 +284,6 @@ function setEditorMode(mode) {
   }
 }
 
-function ensureSimpleEditorMode(actionLabel = 'Action indisponible') {
-  if (!editorIsAdvancedMode()) return true;
-  setMessage(`${actionLabel} : repasse en mode simple.`);
-  return false;
-}
-
 function resetAdvancedPointSelection() {
   state.selectedAdvancedPointIds = clearAdvancedPointSelection();
 }
@@ -283,6 +298,19 @@ function resetAdvancedEdgeSelection() {
 
 function applyAdvancedEdgeSelection(edgeId, options = {}) {
   state.selectedAdvancedEdgeIds = selectAdvancedEdge(edgeId, state.selectedAdvancedEdgeIds, options);
+}
+
+function resetEditableEdgeSelection() {
+  state.selectedEditableEdgeIds = [];
+}
+
+function applyEditableEdgeSelection(edgeId, options = {}) {
+  state.selectedEditableEdgeIds = selectEditableEdge(edgeId, state.selectedEditableEdgeIds, options);
+}
+
+function getEditableEdgesForShape(shape = selectedShape()) {
+  const size = getSize(shape?.size_id);
+  return deriveEditableBBoxEdges(size);
 }
 
 function getActiveAdvancedDraftEdges() {
@@ -520,6 +548,7 @@ orbit.target.set(0, 0, 0);
 
 let editorViewController = null;
 let editorNavigationCubeOverlay = null;
+let editorInteractionController = null;
 
 const root = new THREE.Group();
 scene.add(root);
@@ -529,9 +558,9 @@ const pointer = new THREE.Vector2();
 const cellPickTargets = [];
 const advancedPointPickTargets = [];
 const advancedEdgePickTargets = [];
+const editableEdgePickTargets = [];
 const shapeSnapshots = new Map();
 let editorCatalogAutosave = null;
-let pointerDown = null;
 
 const grid = new THREE.GridHelper(420, 42, 0x5c6370, 0x303640);
 grid.rotation.x = Math.PI / 2;
@@ -1141,6 +1170,19 @@ function ensureVoxelGeneration(shape) {
   shape.generation.operations ??= [];
 }
 
+function normalizeShapeEdgeCorrections(shape = selectedShape()) {
+  if (!shape?.generation) return false;
+  const report = normalizeEdgeCorrectionOperations(shape.generation.operations ?? []);
+  if (!report.changed) return false;
+  shape.generation.operations = report.operations;
+  markShapeDirty(shape, 'edge_correction_conflict_normalized');
+  editorCatalogAutosave?.schedule('edge_correction_conflict_normalized');
+  if (state.selectedOperationIndex !== null && state.selectedOperationIndex >= shape.generation.operations.length) {
+    state.selectedOperationIndex = null;
+  }
+  return true;
+}
+
 function operationsFromLegacyShape(legacyShape, size) {
   const d = size?.dimensions;
   if (!legacyShape || !d) return [];
@@ -1627,33 +1669,35 @@ function renderShapeForm() {
 }
 
 function renderEditorModeUi() {
-  const advancedMode = editorIsAdvancedMode();
   const shape = selectedShape();
   const locked = isVariantEditingLocked(shape);
   const hasShape = Boolean(shape);
   const size = getSize(shape?.size_id);
-  const pointGridSummary = advancedMode
+  const editableEdges = getEditableEdgesForShape(shape);
+  const pointGridSummary = hasShape
     ? summarizeEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP)
     : null;
-  const pointSelectionSummary = advancedMode ? summarizeAdvancedPointSelection(state.selectedAdvancedPointIds) : null;
-  if (dom.editorModeToggleBtn) {
-    dom.editorModeToggleBtn.textContent = advancedMode ? 'Mode avancé' : 'Mode normal';
-    dom.editorModeToggleBtn.classList.toggle('active', advancedMode);
+  const pointSelectionSummary = hasShape ? summarizeAdvancedPointSelection(state.selectedAdvancedPointIds) : null;
+  if (state.selectedEditableEdgeShapeId !== (shape?.id ?? null)) {
+    state.selectedEditableEdgeIds = [];
+    state.selectedEditableEdgeShapeId = shape?.id ?? null;
   }
+  const validEditableEdgeIds = new Set(editableEdges.map((edge) => edge.id));
+  state.selectedEditableEdgeIds = state.selectedEditableEdgeIds.filter((edgeId) => validEditableEdgeIds.has(edgeId));
   if (dom.advancedPieceDisplayPieceInput) dom.advancedPieceDisplayPieceInput.checked = getAdvancedPieceDisplayMode() === ADVANCED_PIECE_DISPLAY_MODES.PIECE;
   if (dom.advancedPieceDisplayPointsInput) dom.advancedPieceDisplayPointsInput.checked = getAdvancedPieceDisplayMode() === ADVANCED_PIECE_DISPLAY_MODES.POINTS;
-  if (dom.advancedPieceDisplayPieceInput) dom.advancedPieceDisplayPieceInput.disabled = !advancedMode;
-  if (dom.advancedPieceDisplayPointsInput) dom.advancedPieceDisplayPointsInput.disabled = !advancedMode;
+  if (dom.advancedPieceDisplayPieceInput) dom.advancedPieceDisplayPieceInput.disabled = !hasShape || locked;
+  if (dom.advancedPieceDisplayPointsInput) dom.advancedPieceDisplayPointsInput.disabled = !hasShape || locked;
   if (dom.advancedDraftOperationCustomFaceInput) dom.advancedDraftOperationCustomFaceInput.checked = getAdvancedDraftOperationType() === 'custom_face';
   if (dom.advancedDraftOperationCutInput) dom.advancedDraftOperationCutInput.checked = getAdvancedDraftOperationType() === 'cut';
   if (dom.advancedCutKeepNormalInput) dom.advancedCutKeepNormalInput.checked = getAdvancedCutKeepSide() === 'normal';
   if (dom.advancedCutKeepInverseInput) dom.advancedCutKeepInverseInput.checked = getAdvancedCutKeepSide() === 'inverse';
-  if (dom.advancedDraftOperationCustomFaceInput) dom.advancedDraftOperationCustomFaceInput.disabled = !advancedMode;
-  if (dom.advancedDraftOperationCutInput) dom.advancedDraftOperationCutInput.disabled = !advancedMode;
-  if (dom.advancedCutKeepNormalInput) dom.advancedCutKeepNormalInput.disabled = !advancedMode;
-  if (dom.advancedCutKeepInverseInput) dom.advancedCutKeepInverseInput.disabled = !advancedMode;
+  if (dom.advancedDraftOperationCustomFaceInput) dom.advancedDraftOperationCustomFaceInput.disabled = !hasShape || locked;
+  if (dom.advancedDraftOperationCutInput) dom.advancedDraftOperationCutInput.disabled = !hasShape || locked;
+  if (dom.advancedCutKeepNormalInput) dom.advancedCutKeepNormalInput.disabled = !hasShape || locked;
+  if (dom.advancedCutKeepInverseInput) dom.advancedCutKeepInverseInput.disabled = !hasShape || locked;
   if (dom.editorAdvancedModePanel) dom.editorAdvancedModePanel.hidden = !hasShape || locked;
-  if (dom.editorAdvancedControls) dom.editorAdvancedControls.hidden = !advancedMode;
+  if (dom.editorAdvancedControls) dom.editorAdvancedControls.hidden = false;
   if (dom.editorAdvancedModeSummary) {
     setElementText(dom.editorAdvancedModeSummary, deriveAdvancedModePreviewSummary({
       shape,
@@ -1667,6 +1711,17 @@ function renderEditorModeUi() {
       faceCount: getActiveAdvancedDraftFaces().length,
     }));
   }
+  if (dom.editableEdgeSelectionSummary) {
+    setElementText(
+      dom.editableEdgeSelectionSummary,
+      state.selectedEditableEdgeIds.length
+        ? `${state.selectedEditableEdgeIds.length} arête(s) : ${state.selectedEditableEdgeIds.join(', ')}`
+        : 'Aucune arête sélectionnée.',
+    );
+  }
+  if (dom.chamferSelectedEdgesBtn) dom.chamferSelectedEdgesBtn.disabled = locked || !state.selectedEditableEdgeIds.length;
+  if (dom.filletSelectedEdgesBtn) dom.filletSelectedEdgesBtn.disabled = locked || !state.selectedEditableEdgeIds.length;
+  if (dom.clearEditableEdgeSelectionBtn) dom.clearEditableEdgeSelectionBtn.disabled = !state.selectedEditableEdgeIds.length;
   renderAdvancedFaceOperationControls();
 
   const lockSelectors = [
@@ -1679,12 +1734,14 @@ function renderEditorModeUi() {
   ];
   for (const selector of lockSelectors) {
     for (const element of document.querySelectorAll(selector)) {
-      element.disabled = advancedMode || locked;
+      element.disabled = locked;
     }
   }
 }
 
 function renderAdvancedFaceOperationControls() {
+  const shape = selectedShape();
+  const locked = isVariantEditingLocked(shape);
   const draftFaces = getActiveAdvancedDraftFaces();
   if (!draftFaces.some((face) => face.id === state.selectedAdvancedDraftFaceId)) {
     state.selectedAdvancedDraftFaceId = draftFaces[0]?.id ?? null;
@@ -1699,7 +1756,7 @@ function renderAdvancedFaceOperationControls() {
       option.selected = face.id === state.selectedAdvancedDraftFaceId;
       appendElement(dom.advancedDraftFaceListSelect, option);
     }
-    dom.advancedDraftFaceListSelect.disabled = !editorIsAdvancedMode();
+    dom.advancedDraftFaceListSelect.disabled = !shape || locked;
   }
 
   const advancedPlanarOperations = getAdvancedPlanarOperations(selectedShape()?.generation?.operations ?? []);
@@ -1717,12 +1774,12 @@ function renderAdvancedFaceOperationControls() {
       option.selected = operation.id === state.selectedAdvancedCustomFaceOperationId;
       appendElement(dom.advancedCustomFaceOperationListSelect, option);
     }
-    dom.advancedCustomFaceOperationListSelect.disabled = !editorIsAdvancedMode();
+    dom.advancedCustomFaceOperationListSelect.disabled = !shape || locked;
   }
 
-  if (dom.commitAdvancedDraftFaceBtn) dom.commitAdvancedDraftFaceBtn.disabled = !editorIsAdvancedMode() || !draftFaces.length;
-  if (dom.deleteAdvancedDraftFaceBtn) dom.deleteAdvancedDraftFaceBtn.disabled = !editorIsAdvancedMode() || !draftFaces.length;
-  if (dom.deleteAdvancedCustomFaceOperationBtn) dom.deleteAdvancedCustomFaceOperationBtn.disabled = !editorIsAdvancedMode() || !advancedPlanarOperations.length;
+  if (dom.commitAdvancedDraftFaceBtn) dom.commitAdvancedDraftFaceBtn.disabled = locked || !draftFaces.length;
+  if (dom.deleteAdvancedDraftFaceBtn) dom.deleteAdvancedDraftFaceBtn.disabled = locked || !draftFaces.length;
+  if (dom.deleteAdvancedCustomFaceOperationBtn) dom.deleteAdvancedCustomFaceOperationBtn.disabled = locked || !advancedPlanarOperations.length;
 }
 
 function updateShapeIdentity() {
@@ -1742,6 +1799,7 @@ function updateShapeIdentity() {
 
 function renderOperations() {
   const shape = selectedShape();
+  normalizeShapeEdgeCorrections(shape);
   const operations = shape?.generation?.operations ?? [];
   clearElement(dom.operationListSelect);
   operations.forEach((op, index) => {
@@ -1755,6 +1813,12 @@ function renderOperations() {
 }
 
 function describeShapeOperation(op) {
+  if (op.type === 'edge_chamfer') {
+    return `chanfrein arête · 0.5 · ${op.edge_ids?.join(', ') ?? 'arêtes inconnues'}`;
+  }
+  if (op.type === 'edge_fillet') {
+    return `arrondi arête · R1 · ${op.edge_ids?.join(', ') ?? 'arêtes inconnues'}`;
+  }
   if (op.type === 'custom_face') {
     return `face · ${op.point_ids?.length ?? 0} points · ${op.scope?.label_fr ?? 'face personnalisée'}`;
   }
@@ -2540,6 +2604,7 @@ function renderPreview() {
   cellPickTargets.length = 0;
   advancedPointPickTargets.length = 0;
   advancedEdgePickTargets.length = 0;
+  editableEdgePickTargets.length = 0;
 
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
@@ -2554,8 +2619,6 @@ function renderPreview() {
     getSuppressedCellKeysForOperations,
     cellKey,
   });
-  const advancedMode = editorIsAdvancedMode();
-
   if (previewState.shouldRenderMesh && !advancedPieceDisplayIsPoints()) {
     const previewGeometry = buildShapeGeometry({
       shape,
@@ -2572,14 +2635,13 @@ function renderPreview() {
     root.add(preview);
   }
 
-  if (!advancedMode && isParametricShape(shape) && previewState.shouldRenderVoxelGuide) renderVoxelGuide(previewState.visibleCells, size);
-  if (!advancedMode) renderCellPickProxies(previewState.visibleCells, size);
-  if (advancedMode) {
-    renderAdvancedPointGrid(size);
-    renderAdvancedCustomFaceOperations(size);
-    renderAdvancedDraftFaces(size);
-    renderAdvancedDraftEdges(size);
-  }
+  if (isParametricShape(shape) && previewState.shouldRenderVoxelGuide) renderVoxelGuide(previewState.visibleCells, size);
+  renderCellPickProxies(previewState.visibleCells, size);
+  renderEditableGeometryEdges(size);
+  renderAdvancedPointGrid(size);
+  renderAdvancedCustomFaceOperations(size);
+  renderAdvancedDraftFaces(size);
+  renderAdvancedDraftEdges(size);
 
   const boundsBox = createCatalogReservationBox(size, CELL_SCALE, new THREE.Vector3());
   const bounds = new THREE.Box3Helper(boundsBox, SELECTED_COLOR);
@@ -2593,7 +2655,30 @@ function renderPreview() {
     root.add(dot);
   }
 
-  if (!advancedMode) renderSelectedFaceHint(size);
+  renderSelectedFaceHint(size);
+}
+
+function renderEditableGeometryEdges(size) {
+  for (const edge of getEditableEdgesForShape()) {
+    const worldA = catalogPositionToWorld(edge.start, size);
+    const worldB = catalogPositionToWorld(edge.end, size);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+      worldA.x, worldA.y, worldA.z,
+      worldB.x, worldB.y, worldB.z,
+    ], 3));
+    const selected = state.selectedEditableEdgeIds.includes(edge.id);
+    const line = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+      color: selected ? 0xf7f1ac : 0x8fb0ff,
+      transparent: true,
+      opacity: selected ? 1 : 0.72,
+      depthTest: false,
+    }));
+    line.userData = { type: 'editable_edge', edgeId: edge.id };
+    line.renderOrder = selected ? 46 : 34;
+    editableEdgePickTargets.push(line);
+    root.add(line);
+  }
 }
 
 function renderAdvancedPointGrid(size) {
@@ -2756,6 +2841,27 @@ function getOperationAffectedCells(op, size) {
   const d = size?.dimensions;
   if (!d) return [];
   const scope = op.scope ?? {};
+  if (scope.kind === 'edge_selection' && Array.isArray(scope.edges) && scope.edges.length) {
+    const seen = new Set();
+    const cells = [];
+    for (const edge of scope.edges) {
+      for (const cell of getOperationAffectedCells({
+        ...op,
+        selection: { ...(op.selection ?? {}), face: edge.face },
+        scope: {
+          kind: 'edge_line',
+          side: edge.side,
+          axis: edge.axis,
+        },
+      }, size)) {
+        const key = `${cell.x}:${cell.y}:${cell.z}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cells.push(cell);
+      }
+    }
+    return cells;
+  }
   if (Array.isArray(scope.cells) && scope.cells.length && scope.kind === 'corner') return normalizeCells(scope.cells, size);
 
   const cells = [];
@@ -2804,7 +2910,7 @@ function createOperationMaterial() {
 
 function createOperationEdgeMaterial(op) {
   return new THREE.LineBasicMaterial({
-    color: op?.type === 'chamfer' ? OPERATION_CHAMFER_COLOR : OPERATION_ROUND_COLOR,
+    color: op?.type === 'chamfer' || op?.type === 'edge_chamfer' ? OPERATION_CHAMFER_COLOR : OPERATION_ROUND_COLOR,
     transparent: true,
     opacity: 0.82,
   });
@@ -2966,6 +3072,8 @@ function validateCatalog() {
     const cells = getShapeCells(shape, size);
     if (shape.generation?.mode === 'voxel_grid' && cells.length === 0) warnings.push(`${shape.id}: aucune cellule active.`);
     if (shape.generation?.mode === 'parametric_shape' && !['point_1', 'point_2', 'point_3'].includes(shape.generation?.base?.type)) errors.push(`${shape.id}: type paramétrique inconnu.`);
+    const edgeCorrectionValidation = validateEdgeCorrectionExclusivity(shape.generation?.operations ?? []);
+    for (const issue of edgeCorrectionValidation.errors) errors.push(`${shape.id}: ${issue}.`);
     for (const anchor of shape.anchors ?? []) {
       if (!anchor.position || !anchor.normal) errors.push(`${shape.id}/${anchor.id}: position ou normal absent.`);
     }
@@ -2987,12 +3095,25 @@ function validateSelectedShape() {
     errors.push(`${shape.id}: advanced_mesh est obsolète.`);
   } else {
     ensureVoxelGeneration(shape);
+    normalizeShapeEdgeCorrections(shape);
     const cells = getShapeCells(shape, size);
     if (!cells.length) errors.push(`${shape.id}: aucune cellule active.`);
+    const edgeCorrectionValidation = validateEdgeCorrectionExclusivity(shape.generation.operations ?? []);
+    for (const issue of edgeCorrectionValidation.errors) errors.push(`${shape.id}: ${issue}.`);
     for (const op of shape.generation.operations ?? []) {
-      if (!['round', 'chamfer', 'slope', 'cut', 'custom_face'].includes(op.type)) errors.push(`${shape.id}: opération inconnue ${op.type}.`);
+      if (!['round', 'chamfer', 'slope', 'cut', 'custom_face', 'edge_chamfer', 'edge_fillet'].includes(op.type)) errors.push(`${shape.id}: opération inconnue ${op.type}.`);
       if (op.type === 'round' && Number(op.radius) !== 1) errors.push(`${shape.id}: arrondi avec rayon différent de 1.`);
       if (op.type === 'chamfer' && Number(op.size) !== 0.5) errors.push(`${shape.id}: chanfrein avec taille différente de 0.5.`);
+      if (op.type === 'edge_chamfer') {
+        const report = validateEdgeChamferOperation(op);
+        for (const issue of report.errors) errors.push(`${shape.id}: edge_chamfer ${issue}.`);
+        for (const issue of report.warnings) warnings.push(`${shape.id}: edge_chamfer ${issue}.`);
+      }
+      if (op.type === 'edge_fillet') {
+        const report = validateEdgeFilletOperation(op);
+        for (const issue of report.errors) errors.push(`${shape.id}: edge_fillet ${issue}.`);
+        for (const issue of report.warnings) warnings.push(`${shape.id}: edge_fillet ${issue}.`);
+      }
       if (op.type === 'custom_face') {
         const report = validateCustomFaceOperation(op, size);
         for (const issue of report.errors) errors.push(`${shape.id}: custom_face ${issue}.`);
@@ -3253,29 +3374,55 @@ function setPointerFromEditorEvent(event) {
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 }
 
-function pickAdvancedPoint(event) {
-  if (!editorIsAdvancedMode() || !advancedPointPickTargets.length) return false;
+function pickAdvancedPointPrimitive(event) {
+  if (!editorIsAdvancedMode() || !advancedPointPickTargets.length) return null;
   setPointerFromEditorEvent(event);
   raycaster.setFromCamera(pointer, camera);
   const pointHits = raycaster.intersectObjects(advancedPointPickTargets, false);
-  if (!pointHits.length) return false;
-  const pointId = pointHits[0].object.userData.pointId;
-  applyAdvancedPointSelection(pointId, { multi: event.shiftKey });
-  renderAll();
-  return true;
+  if (!pointHits.length) return null;
+  const hit = pointHits[0];
+  const pointId = hit.object.userData.pointId;
+  return {
+    type: 'point',
+    id: pointId,
+    position: hit.point ? { x: hit.point.x, y: hit.point.y, z: hit.point.z } : null,
+    object: hit.object,
+    intersection: hit,
+  };
 }
 
-function pickAdvancedEdge(event) {
-  if (!editorIsAdvancedMode() || !advancedEdgePickTargets.length) return false;
+function pickEditableEdgePrimitive(event) {
+  if (!editableEdgePickTargets.length) return null;
+  setPointerFromEditorEvent(event);
+  raycaster.params.Line.threshold = 12;
+  raycaster.setFromCamera(pointer, camera);
+  const edgeHits = raycaster.intersectObjects(editableEdgePickTargets, false);
+  if (!edgeHits.length) return null;
+  const hit = edgeHits[0];
+  return {
+    type: 'edge',
+    id: hit.object.userData.edgeId,
+    position: hit.point ? { x: hit.point.x, y: hit.point.y, z: hit.point.z } : null,
+    object: hit.object,
+    intersection: hit,
+  };
+}
+
+function pickAdvancedEdgePrimitive(event) {
+  if (!editorIsAdvancedMode() || !advancedEdgePickTargets.length) return null;
   setPointerFromEditorEvent(event);
   raycaster.params.Line.threshold = 12;
   raycaster.setFromCamera(pointer, camera);
   const edgeHits = raycaster.intersectObjects(advancedEdgePickTargets, false);
-  if (!edgeHits.length) return false;
-  const edgeId = edgeHits[0].object.userData.edgeId;
-  applyAdvancedEdgeSelection(edgeId, { multi: event.shiftKey });
-  renderAll(false);
-  return true;
+  if (!edgeHits.length) return null;
+  const hit = edgeHits[0];
+  return {
+    type: 'line',
+    id: hit.object.userData.edgeId,
+    position: hit.point ? { x: hit.point.x, y: hit.point.y, z: hit.point.z } : null,
+    object: hit.object,
+    intersection: hit,
+  };
 }
 
 function createAdvancedDraftEdgeFromSelection() {
@@ -3484,6 +3631,55 @@ function commitSelectedAdvancedDraftFaceToOperation() {
   return true;
 }
 
+function createOperationFromSelectedEditableEdges(type) {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !state.selectedEditableEdgeIds.length) return false;
+  if (!ensureVariantEditable('Création opération arête refusée')) return false;
+
+  ensureVoxelGeneration(shape);
+  const editableEdges = getEditableEdgesForShape(shape);
+  const result = type === 'edge_fillet'
+    ? createEdgeFilletOperation({
+      shapeId: shape.id,
+      edgeIds: state.selectedEditableEdgeIds,
+      editableEdges,
+    })
+    : createEdgeChamferOperation({
+      shapeId: shape.id,
+      edgeIds: state.selectedEditableEdgeIds,
+      editableEdges,
+    });
+
+  if (!result.created) {
+    const reasonLabel = result.reason === 'empty_selection'
+      ? 'aucune arête sélectionnée'
+      : result.reason === 'unknown_edge'
+        ? 'sélection incohérente'
+        : 'erreur inconnue';
+    setMessage(`Opération arête refusée : ${reasonLabel}.`);
+    renderAll(false);
+    return false;
+  }
+
+  const validation = result.operation.type === 'edge_fillet'
+    ? validateEdgeFilletOperation(result.operation)
+    : validateEdgeChamferOperation(result.operation);
+  if (!validation.valid) {
+    setMessage(`Opération arête refusée : ${validation.errors.join(', ')}.`);
+    renderAll(false);
+    return false;
+  }
+
+  upsertEdgeCorrection(shape, state.selectedEditableEdgeIds[0], result.operation);
+  markShapeDirty(shape, `${result.operation.type}_added`);
+  state.selectedOperationIndex = (shape.generation.operations ?? []).length - 1;
+  afterEditorCatalogMutation(result.operation.type, {
+    message: `Opération ajoutée : ${describeShapeOperation(result.operation)}.`,
+  });
+  return true;
+}
+
 function deleteSelectedAdvancedCustomFaceOperation() {
   const shape = selectedShape();
   const selectedOperation = getSelectedAdvancedCustomFaceOperation();
@@ -3498,31 +3694,246 @@ function deleteSelectedAdvancedCustomFaceOperation() {
   return true;
 }
 
-function pickVoxelFace(event) {
-  if (editorIsAdvancedMode()) return;
+function pickVoxelFacePrimitive(event) {
   setPointerFromEditorEvent(event);
   raycaster.setFromCamera(pointer, camera);
-  if (!cellPickTargets.length) return;
+  if (!cellPickTargets.length) return null;
   const hits = raycaster.intersectObjects(cellPickTargets, false);
-  if (!hits.length) return;
+  if (!hits.length) return null;
   const hit = hits[0];
   const cell = structuredClone(hit.object.userData.cell);
   const face = faceFromIntersection(hit);
-  state.selectedFace = {
+  return {
+    type: 'face',
+    id: `cell:${cell.x}:${cell.y}:${cell.z}:${face}`,
     cell,
     face,
     position: anchorPositionForCellFace(cell, face),
+    object: hit.object,
+    intersection: hit,
+  };
+}
+
+function pickEditorPrimitive(event) {
+  return pickAdvancedPointPrimitive(event)
+    ?? pickEditableEdgePrimitive(event)
+    ?? pickAdvancedEdgePrimitive(event)
+    ?? pickVoxelFacePrimitive(event);
+}
+
+function applySelectedFace(faceSelection, { redraw = true } = {}) {
+  if (!faceSelection) {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    if (redraw) {
+      renderAnchors();
+      renderPreview();
+    }
+    return;
+  }
+
+  state.selectedFace = {
+    cell: structuredClone(faceSelection.cell),
+    face: faceSelection.face,
+    position: structuredClone(faceSelection.position),
   };
   const shape = selectedShape();
   const existing = (shape?.anchors ?? []).find((anchor) => anchorMatchesSelectedFace(anchor));
   state.selectedAnchorId = existing?.id ?? null;
-  setCellInputValues(cell);
-  renderAnchors();
-  renderPreview();
+  setCellInputValues(faceSelection.cell);
+  if (redraw) {
+    renderAnchors();
+    renderPreview();
+  }
+}
+
+function clearPrimitiveSelectionState({ redraw = true } = {}) {
+  state.selectedFace = null;
+  state.selectedAnchorId = null;
+  resetAdvancedPointSelection();
+  resetAdvancedEdgeSelection();
+  resetEditableEdgeSelection();
+  if (redraw) renderAll(false);
+}
+
+function selectEditorPrimitive(primitive, options = {}) {
+  if (!primitive) return false;
+  const { preserveMenu = false } = options;
+  if (!preserveMenu) closeEditorGeometryContextMenu();
+
+  if (primitive.type === 'point') {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    resetAdvancedEdgeSelection();
+    resetEditableEdgeSelection();
+    applyAdvancedPointSelection(primitive.id, { multi: false });
+    renderAll();
+    return true;
+  }
+
+  if (primitive.type === 'edge') {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    resetAdvancedPointSelection();
+    resetAdvancedEdgeSelection();
+    applyEditableEdgeSelection(primitive.id, { multi: false });
+    renderAll(false);
+    return true;
+  }
+
+  if (primitive.type === 'line') {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    resetAdvancedPointSelection();
+    resetEditableEdgeSelection();
+    applyAdvancedEdgeSelection(primitive.id, { multi: false });
+    renderAll(false);
+    return true;
+  }
+
+  if (primitive.type === 'face') {
+    resetAdvancedPointSelection();
+    resetAdvancedEdgeSelection();
+    resetEditableEdgeSelection();
+    applySelectedFace(primitive, { redraw: false });
+    renderAll(false);
+    return true;
+  }
+
+  return false;
+}
+
+function toggleEditorPrimitive(primitive) {
+  if (!primitive) return false;
+  closeEditorGeometryContextMenu();
+
+  if (primitive.type === 'point') {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    resetAdvancedEdgeSelection();
+    resetEditableEdgeSelection();
+    applyAdvancedPointSelection(primitive.id, { multi: true });
+    renderAll();
+    return true;
+  }
+
+  if (primitive.type === 'edge') {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    resetAdvancedPointSelection();
+    resetAdvancedEdgeSelection();
+    applyEditableEdgeSelection(primitive.id, { multi: true });
+    renderAll(false);
+    return true;
+  }
+
+  if (primitive.type === 'line') {
+    state.selectedFace = null;
+    state.selectedAnchorId = null;
+    resetAdvancedPointSelection();
+    resetEditableEdgeSelection();
+    applyAdvancedEdgeSelection(primitive.id, { multi: true });
+    renderAll(false);
+    return true;
+  }
+
+  if (primitive.type === 'face') {
+    applySelectedFace(primitive, { redraw: false });
+    renderAll(false);
+    return true;
+  }
+
+  return false;
+}
+
+function getEditorSelectionState() {
+  const selection = createEmptyEditorSelectionState();
+  for (const pointId of state.selectedAdvancedPointIds) selection.points.add(getPrimitiveKey({ type: 'point', id: pointId }));
+  for (const edgeId of state.selectedAdvancedEdgeIds) selection.lines.add(getPrimitiveKey({ type: 'line', id: edgeId }));
+  for (const edgeId of state.selectedEditableEdgeIds) selection.edges.add(getPrimitiveKey({ type: 'edge', id: edgeId }));
+  if (state.selectedFace) {
+    const facePrimitive = {
+      type: 'face',
+      id: `cell:${state.selectedFace.cell.x}:${state.selectedFace.cell.y}:${state.selectedFace.cell.z}:${state.selectedFace.face}`,
+      cell: structuredClone(state.selectedFace.cell),
+      face: state.selectedFace.face,
+      position: structuredClone(state.selectedFace.position),
+    };
+    selection.faces.add(getPrimitiveKey(facePrimitive));
+    selection.active = facePrimitive;
+  } else if (state.selectedEditableEdgeIds.length) {
+    selection.active = { type: 'edge', id: state.selectedEditableEdgeIds.at(-1) };
+  } else if (state.selectedAdvancedEdgeIds.length) {
+    selection.active = { type: 'line', id: state.selectedAdvancedEdgeIds.at(-1) };
+  } else if (state.selectedAdvancedPointIds.length) {
+    selection.active = { type: 'point', id: state.selectedAdvancedPointIds.at(-1) };
+  }
+  return selection;
+}
+
+function selectedFaceHasOperation(face = state.selectedFace) {
+  const shape = selectedShape();
+  if (!shape || !face) return false;
+  return (shape.generation?.operations ?? []).some((op) => operationMatchesSelectedFace(op, face));
+}
+
+function getEditorContextCapabilities() {
+  const selection = getEditorSelectionState();
+  return {
+    locked: isVariantEditingLocked(),
+    faceRound: selection.faces.size > 0,
+    faceChamfer: selection.faces.size > 0,
+    faceDelete: selection.faces.size > 0 && selectedFaceHasOperation(),
+    edgeChamfer: selection.edges.size > 0,
+    edgeFillet: selection.edges.size > 0,
+  };
+}
+
+function getEditorGeometryContextActions(selection, hovered) {
+  return getEditorContextActions(selection, hovered, getEditorContextCapabilities());
+}
+
+function closeEditorGeometryContextMenu() {
+  if (!dom.editorGeometryContextMenu) return;
+  dom.editorGeometryContextMenu.hidden = true;
+  clearElement(dom.editorGeometryContextMenu);
+}
+
+function executeEditorContextAction(actionId) {
+  if (actionId === 'face_round') createOperationFromSelectedFace('round');
+  else if (actionId === 'face_chamfer') createOperationFromSelectedFace('chamfer');
+  else if (actionId === 'face_delete') removeFaceOperation();
+  else if (actionId === 'edge_chamfer') createOperationFromSelectedEditableEdges('edge_chamfer');
+  else if (actionId === 'edge_fillet') createOperationFromSelectedEditableEdges('edge_fillet');
+  closeEditorGeometryContextMenu();
+}
+
+function openEditorGeometryContextMenu({ clientX, clientY, viewportStage, actions }) {
+  const menu = dom.editorGeometryContextMenu;
+  if (!menu || !actions.length) {
+    closeEditorGeometryContextMenu();
+    return;
+  }
+
+  clearElement(menu);
+  for (const action of actions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label;
+    button.addEventListener('click', () => executeEditorContextAction(action.id));
+    appendElement(menu, button);
+  }
+
+  menu.hidden = false;
+  const viewportRect = (viewportStage ?? dom.viewportWrap)?.getBoundingClientRect?.() ?? document.body.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const maxLeft = viewportRect.right - menuRect.width - 8;
+  const maxTop = viewportRect.bottom - menuRect.height - 8;
+  menu.style.left = `${Math.max(viewportRect.left + 8, Math.min(clientX, maxLeft))}px`;
+  menu.style.top = `${Math.max(viewportRect.top + 8, Math.min(clientY, maxTop))}px`;
 }
 
 function selectVoxelFace(cell, face = state.selectedFace?.face ?? 'top') {
-  if (editorIsAdvancedMode()) return;
   const normalizedCell = {
     x: Math.floor(Number(cell.x)),
     y: Math.floor(Number(cell.y)),
@@ -3539,6 +3950,87 @@ function selectVoxelFace(cell, face = state.selectedFace?.face ?? 'top') {
   setCellInputValues(normalizedCell);
   renderAnchors();
   renderPreview();
+}
+
+function panEditorCameraByPointerDelta(deltaX, deltaY, scaleMultiplier = 1) {
+  const distance = camera.position.distanceTo(orbit.target);
+  const fovInRadians = THREE.MathUtils.degToRad(camera.fov);
+  const viewportHeight = Math.max(dom.canvas.clientHeight, 1);
+  const viewportWidth = Math.max(dom.canvas.clientWidth, 1);
+  const worldPerPixelY = 2 * Math.tan(fovInRadians / 2) * distance / viewportHeight;
+  const worldPerPixelX = worldPerPixelY * (viewportWidth / viewportHeight);
+  const panScale = (Number.isFinite(EDITOR_CAMERA_SETTINGS.panSensitivity) ? EDITOR_CAMERA_SETTINGS.panSensitivity : 1) * scaleMultiplier;
+
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0).normalize();
+  const up = camera.up.clone().normalize();
+  const offset = right.multiplyScalar(-deltaX * worldPerPixelX * panScale)
+    .add(up.multiplyScalar(deltaY * worldPerPixelY * panScale));
+
+  camera.position.add(offset);
+  orbit.target.add(offset);
+  orbit.update();
+}
+
+const editorCameraDragState = {
+  lastPoint: null,
+  mode: EDITOR_CAMERA_SETTINGS.rightMouseMode === 'orbitCamera' ? 'orbit' : 'pan',
+  spherical: new THREE.Spherical(),
+};
+
+function beginEditorViewportPan(event, context = {}) {
+  editorCameraDragState.lastPoint = context.startPoint ?? { x: event.clientX, y: event.clientY };
+}
+
+function updateEditorViewportPan(event, context = {}) {
+  const point = context.currentPoint ?? { x: event.clientX, y: event.clientY };
+  const lastPoint = editorCameraDragState.lastPoint ?? point;
+  panEditorCameraByPointerDelta(point.x - lastPoint.x, point.y - lastPoint.y);
+  editorCameraDragState.lastPoint = point;
+}
+
+function endEditorViewportPan() {
+  editorCameraDragState.lastPoint = null;
+}
+
+function beginEditorCameraDrag(event, context = {}) {
+  const settings = context.settings ?? EDITOR_CAMERA_SETTINGS;
+  editorCameraDragState.lastPoint = context.startPoint ?? { x: event.clientX, y: event.clientY };
+  editorCameraDragState.mode = settings.rightMouseMode === 'orbitCamera' ? 'orbit' : 'pan';
+  const offset = camera.position.clone().sub(orbit.target);
+  editorCameraDragState.spherical.setFromVector3(offset);
+}
+
+function updateEditorCameraDrag(event, context = {}) {
+  const point = context.currentPoint ?? { x: event.clientX, y: event.clientY };
+  const lastPoint = editorCameraDragState.lastPoint ?? point;
+  const deltaX = point.x - lastPoint.x;
+  const deltaY = point.y - lastPoint.y;
+  const settings = context.settings ?? EDITOR_CAMERA_SETTINGS;
+
+  if (editorCameraDragState.mode === 'pan') {
+    panEditorCameraByPointerDelta(deltaX, deltaY);
+  } else {
+    const rotationSensitivity = Number.isFinite(settings.rotationSensitivity) ? settings.rotationSensitivity : 1;
+    const invertY = settings.invertY ? -1 : 1;
+    const azimuthDelta = (deltaX / Math.max(dom.canvas.clientWidth, 1)) * Math.PI * rotationSensitivity;
+    const polarDelta = (deltaY / Math.max(dom.canvas.clientHeight, 1)) * Math.PI * rotationSensitivity * invertY;
+    editorCameraDragState.spherical.theta -= azimuthDelta;
+    editorCameraDragState.spherical.phi = THREE.MathUtils.clamp(
+      editorCameraDragState.spherical.phi + polarDelta,
+      0.05,
+      Math.PI - 0.05,
+    );
+    const nextOffset = new THREE.Vector3().setFromSpherical(editorCameraDragState.spherical);
+    camera.position.copy(orbit.target).add(nextOffset);
+    camera.lookAt(orbit.target);
+    orbit.update();
+  }
+
+  editorCameraDragState.lastPoint = point;
+}
+
+function endEditorCameraDrag() {
+  editorCameraDragState.lastPoint = null;
 }
 
 function resolveInitialCursorSelection(cells) {
@@ -3651,6 +4143,7 @@ function isAnchorToggleKey(event) {
 
 function bindEditorCellKeyboardNavigation() {
   const handleKeyDown = (event) => {
+    if (event.key === 'Escape') closeEditorGeometryContextMenu();
     if (event.key === 'Escape' && dom.baseReferenceModal?.classList.contains('open')) {
       closeBaseReferenceModal();
       event.preventDefault();
@@ -3672,47 +4165,51 @@ function bindEditorCellKeyboardNavigation() {
     if (dom.editorUserConfigModal?.classList.contains('open')
       || dom.baseReferenceModal?.classList.contains('open')
       || dom.variantCreationModal?.classList.contains('open')) return;
-    if (editorIsAdvancedMode()) {
-      if (event.key === 'f' || event.key === 'F') {
-        if (createAdvancedDraftFaceFromSelection()) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-        return;
-      }
-      if (event.key === 'l' || event.key === 'L') {
-        if (createAdvancedDraftEdgeFromSelection()) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-        return;
-      }
-      if (event.key === 'Escape') {
-        if (state.selectedAdvancedPointIds.length) {
-          resetAdvancedPointSelection();
-          resetAdvancedEdgeSelection();
-          renderAll();
-          event.preventDefault();
-          event.stopPropagation();
-        }
-        return;
-      }
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (deleteSelectedAdvancedDraftEdges()) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        if (state.selectedAdvancedPointIds.length) {
-          resetAdvancedPointSelection();
-          setMessage('Sélection de points effacée.');
-          renderAll(false);
-          event.preventDefault();
-          event.stopPropagation();
-        }
-        return;
+    if (event.key === 'f' || event.key === 'F') {
+      if (createAdvancedDraftFaceFromSelection()) {
+        event.preventDefault();
+        event.stopPropagation();
       }
       return;
+    }
+    if (event.key === 'l' || event.key === 'L') {
+      if (createAdvancedDraftEdgeFromSelection()) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+    if (event.key === 'Escape') {
+      if (state.selectedEditableEdgeIds.length) {
+        resetEditableEdgeSelection();
+        renderAll(false);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (state.selectedAdvancedPointIds.length || state.selectedAdvancedEdgeIds.length) {
+        resetAdvancedPointSelection();
+        resetAdvancedEdgeSelection();
+        renderAll();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      if (deleteSelectedAdvancedDraftEdges()) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (state.selectedAdvancedPointIds.length) {
+        resetAdvancedPointSelection();
+        setMessage('Sélection de points effacée.');
+        renderAll(false);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
     }
     if (event.ctrlKey || event.altKey || event.metaKey || isEditorTextInputTarget(event.target)) return;
 
@@ -3734,25 +4231,6 @@ function bindEditorCellKeyboardNavigation() {
   document.addEventListener('keydown', handleKeyDown, { capture: true });
 }
 
-function bindFacePicking() {
-  renderer.domElement.addEventListener('pointerdown', (event) => {
-    renderer.domElement.focus({ preventScroll: true });
-    if (event.button !== 0) return;
-    pointerDown = { x: event.clientX, y: event.clientY };
-  });
-  renderer.domElement.addEventListener('pointerup', (event) => {
-    if (event.button !== 0 || !pointerDown) return;
-    const dx = Math.abs(event.clientX - pointerDown.x);
-    const dy = Math.abs(event.clientY - pointerDown.y);
-    pointerDown = null;
-    if (dx <= 5 && dy <= 5) {
-      if (pickAdvancedPoint(event)) return;
-      if (pickAdvancedEdge(event)) return;
-      pickVoxelFace(event);
-    }
-  });
-}
-
 function bindEvents() {
   bindElement(dom.openEditorUserConfigBtn, 'click', () => setEditorUserConfigModalOpen(true));
   bindElement(dom.closeEditorUserConfigBtn, 'click', () => setEditorUserConfigModalOpen(false));
@@ -3765,22 +4243,26 @@ function bindEvents() {
   });
 
   bindElement(dom.shapeVariantSelect, 'change', () => {
+    closeEditorGeometryContextMenu();
     state.selectedShapeId = dom.shapeVariantSelect.value;
     state.selectedFace = null;
     resetAdvancedPointSelection();
     resetAdvancedEdgeSelection();
+    resetEditableEdgeSelection();
     if (state.selectedShapeId) storeShapeSnapshot(state.selectedShapeId);
     const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === state.selectedShapeId);
     if (piece) state.selectedCatalogPieceId = piece.id;
     renderAll();
   });
   bindElement(dom.catalogPieceSelect, 'change', () => {
+    closeEditorGeometryContextMenu();
     state.selectedCatalogPieceId = dom.catalogPieceSelect.value;
     state.selectedFace = null;
     const piece = selectedPiece();
     if (piece) state.selectedShapeId = piece.shape_variant_id;
     resetAdvancedPointSelection();
     resetAdvancedEdgeSelection();
+    resetEditableEdgeSelection();
     if (state.selectedShapeId) storeShapeSnapshot(state.selectedShapeId);
     renderAll();
   });
@@ -3800,15 +4282,6 @@ function bindEvents() {
   bindElement(dom.shapeLabelInput, 'change', updateShapeIdentity);
   bindElement(dom.shapeFamilyInput, 'change', updateShapeIdentity);
   bindElement(dom.shapeStatusSelect, 'change', updateShapeIdentity);
-  const handleEditorModeToggle = () => {
-    if (isVariantEditingLocked()) {
-      setMessage('Bascule mode refusée : variante verrouillée.');
-      renderAll(false);
-      return;
-    }
-    setEditorMode(editorIsAdvancedMode() ? EDITOR_MODES.SIMPLE : EDITOR_MODES.ADVANCED);
-    renderAll();
-  };
   const handleAdvancedPieceDisplayModeChange = () => {
     state.advancedPieceDisplayMode = dom.advancedPieceDisplayPointsInput?.checked
       ? ADVANCED_PIECE_DISPLAY_MODES.POINTS
@@ -3816,9 +4289,15 @@ function bindEvents() {
     renderPreview();
     renderEditorModeUi();
   };
-  bindElement(dom.editorModeToggleBtn, 'click', handleEditorModeToggle);
   bindElement(dom.advancedPieceDisplayPieceInput, 'change', handleAdvancedPieceDisplayModeChange);
   bindElement(dom.advancedPieceDisplayPointsInput, 'change', handleAdvancedPieceDisplayModeChange);
+  bindElement(dom.chamferSelectedEdgesBtn, 'click', () => createOperationFromSelectedEditableEdges('edge_chamfer'));
+  bindElement(dom.filletSelectedEdgesBtn, 'click', () => createOperationFromSelectedEditableEdges('edge_fillet'));
+  bindElement(dom.clearEditableEdgeSelectionBtn, 'click', () => {
+    closeEditorGeometryContextMenu();
+    resetEditableEdgeSelection();
+    renderAll(false);
+  });
   bindElement(dom.advancedDraftOperationCustomFaceInput, 'change', () => {
     state.advancedDraftOperationType = 'custom_face';
     renderEditorModeUi();
@@ -3896,8 +4375,27 @@ function bindEvents() {
     });
   }
 
-  renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
-  bindFacePicking();
+  editorInteractionController?.dispose?.();
+  editorInteractionController = createEditorInteractionController({
+    canvas: renderer.domElement,
+    viewportStage: dom.viewportWrap,
+    orbitControls: orbit,
+    pickPrimitive: pickEditorPrimitive,
+    selectPrimitive: selectEditorPrimitive,
+    togglePrimitive: toggleEditorPrimitive,
+    clearPrimitiveSelection: clearPrimitiveSelectionState,
+    getSelectionState: getEditorSelectionState,
+    beginViewportPan: beginEditorViewportPan,
+    updateViewportPan: updateEditorViewportPan,
+    endViewportPan: endEditorViewportPan,
+    beginCameraDrag: beginEditorCameraDrag,
+    updateCameraDrag: updateEditorCameraDrag,
+    endCameraDrag: endEditorCameraDrag,
+    openContextMenu: openEditorGeometryContextMenu,
+    closeContextMenu: closeEditorGeometryContextMenu,
+    getContextActions: getEditorGeometryContextActions,
+    getUserSettings: () => EDITOR_CAMERA_SETTINGS,
+  });
   bindEditorCellKeyboardNavigation();
 }
 

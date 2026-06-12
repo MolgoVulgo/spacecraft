@@ -295,6 +295,12 @@ function createCellGeometry(cell, dim, scale, options = {}) {
 }
 
 function createOperationGeometry(op, dim, scale) {
+  if (op.type === 'edge_fillet') {
+    return createMultiEdgeProfileGeometry(op, dim, scale, 'round');
+  }
+  if (op.type === 'edge_chamfer') {
+    return createMultiEdgeProfileGeometry(op, dim, scale, 'chamfer');
+  }
   if (op.type === 'round') {
     if (op.scope?.kind === 'corner') return createCornerRoundGeometry(op, dim, scale);
     if (['edge_line', 'top_side_line', 'side_line'].includes(op.scope?.kind)) return createEdgeProfileGeometry(op, dim, scale, 'round');
@@ -305,6 +311,28 @@ function createOperationGeometry(op, dim, scale) {
   }
   if (op.type === 'custom_face') return createCustomFaceGeometry(op, dim, scale);
   return null;
+}
+
+function createMultiEdgeProfileGeometry(op, dim, scale, mode) {
+  const edges = Array.isArray(op?.scope?.edges) ? op.scope.edges : [];
+  const geometries = [];
+  for (const edge of edges) {
+    const geometry = createEdgeProfileGeometry({
+      ...op,
+      selection: {
+        ...(op.selection ?? {}),
+        face: edge.face,
+      },
+      scope: {
+        ...op.scope,
+        kind: 'edge_line',
+        side: edge.side,
+        axis: edge.axis,
+      },
+    }, dim, scale, mode);
+    if (geometry) geometries.push(geometry);
+  }
+  return geometries.length ? mergeGeometries(geometries) : null;
 }
 
 function createCustomFaceGeometry(op, dim, scale) {
@@ -705,6 +733,17 @@ function getSuppressedCellKeysForOperations(operations, dim) {
 
 function getOperationAffectedCells(op, dim) {
   const scope = op.scope ?? {};
+  if (scope.kind === 'edge_selection' && Array.isArray(scope.edges) && scope.edges.length) {
+    return normalizeCells(scope.edges.flatMap((edge) => getOperationAffectedCells({
+      ...op,
+      selection: { ...(op.selection ?? {}), face: edge.face },
+      scope: {
+        kind: 'edge_line',
+        side: edge.side,
+        axis: edge.axis,
+      },
+    }, dim)), dim);
+  }
   const cells = [];
   const add = (x, y, z) => { if (isCellInside(dim, x, y, z)) cells.push({ x, y, z }); };
   const allZ = [...Array(Number(dim.height) || 1).keys()];
