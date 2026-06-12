@@ -624,15 +624,13 @@ input[type="checkbox"] {
 .editor-main {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(320px, 74vh) minmax(120px, 26vh);
+  display: block;
 }
 
 .editor-viewport-wrap {
   position: relative;
   min-width: 0;
-  min-height: 0;
-  border-bottom: 1px solid #2a2d34;
+  min-height: 100vh;
   background: radial-gradient(circle at 50% 40%, #1b1e27 0, #101114 62%);
 }
 
@@ -643,21 +641,64 @@ input[type="checkbox"] {
   touch-action: none;
 }
 
-.editor-workbench {
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-  background: #15171d;
+.editor-advanced-mode-panel {
+  position: absolute;
+  z-index: 7;
+  left: 12px;
+  bottom: 12px;
+  width: min(430px, calc(100% - 24px));
+  max-height: min(82vh, calc(100% - 24px));
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #2f3440;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(22, 25, 33, 0.96), rgba(15, 17, 23, 0.96));
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
 }
 
-.editor-tabs {
+.editor-mode-toggle {
+  width: 100%;
+  min-height: 34px;
+  margin-bottom: 10px;
+  font-weight: 650;
+}
+
+.editor-overlay-tabs {
   display: flex;
   gap: 6px;
-  padding: 10px 12px;
-  border-bottom: 1px solid #2a2d34;
-  background: #111318;
+  margin-bottom: 10px;
+}
+
+.editor-overlay-tabs .tab-button {
+  flex: 1 1 0;
+}
+
+.editor-advanced-visibility-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.editor-advanced-visibility-bar > span {
+  font-size: 12px;
+  color: #b8becb;
+}
+
+.editor-advanced-operation-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.editor-advanced-operation-bar > span {
+  font-size: 12px;
+  color: #b8becb;
 }
 
 .tab-button {
@@ -678,8 +719,8 @@ input[type="checkbox"] {
 
 .tab-panel {
   display: none;
-  overflow: auto;
-  padding: 12px;
+  overflow: visible;
+  padding: 0;
 }
 
 .tab-panel.active {
@@ -734,6 +775,8 @@ input[type="checkbox"] {
 
 #operationListSelect,
 #anchorListSelect,
+#advancedVertexListSelect,
+#advancedFaceListSelect,
 #shapeVariantSelect,
 #catalogPieceSelect,
 #specProfileSelect,
@@ -751,6 +794,10 @@ input[type="checkbox"] {
 
 .editor-row span {
   color: #c3c7d1;
+}
+
+.advanced-vertex-grid {
+  grid-template-columns: 32px minmax(72px, 1fr);
 }
 
 @media (max-width: 1100px) {

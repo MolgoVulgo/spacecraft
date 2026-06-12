@@ -93,3 +93,164 @@ test('height symmetry preserves the bottom anchored bounding box', () => {
     max: { x: 150, y: 200, z: 100 },
   });
 });
+
+test('advanced mesh builds a geometry smaller than the logical base box', () => {
+  const geometry = buildShapeGeometry({
+    shape: {
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 0, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 2, z: 0 },
+            { id: 'v004', x: 0, y: 2, z: 0 },
+            { id: 'v005', x: 0, y: 0, z: 1 },
+            { id: 'v006', x: 4, y: 0, z: 1 },
+            { id: 'v007', x: 4, y: 2, z: 1 },
+            { id: 'v008', x: 0, y: 2, z: 1 },
+          ],
+          faces: [
+            { id: 'f001', vertices: ['v001', 'v002', 'v003', 'v004'] },
+            { id: 'f002', vertices: ['v005', 'v008', 'v007', 'v006'] },
+            { id: 'f003', vertices: ['v001', 'v005', 'v006', 'v002'] },
+            { id: 'f004', vertices: ['v002', 'v006', 'v007', 'v003'] },
+            { id: 'f005', vertices: ['v003', 'v007', 'v008', 'v004'] },
+            { id: 'f006', vertices: ['v004', 'v008', 'v005', 'v001'] },
+          ],
+        },
+      },
+      collision: { mode: 'base_box' },
+    },
+    size: { dimensions: { length: 4, width: 3, height: 1 } },
+    scale: 100,
+  });
+
+  assert.deepEqual(sizeOf(geometry), { x: 200, y: 400, z: 100 });
+  assert.deepEqual(boundsOf(geometry), {
+    min: { x: -150, y: -200, z: 0 },
+    max: { x: 50, y: 200, z: 100 },
+  });
+});
+
+test('advanced mesh triangulates quad faces', () => {
+  const geometry = buildShapeGeometry({
+    shape: {
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 0, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 3, z: 0 },
+            { id: 'v004', x: 0, y: 3, z: 0 },
+          ],
+          faces: [{ id: 'f001', vertices: ['v001', 'v002', 'v003', 'v004'] }],
+        },
+      },
+      collision: { mode: 'base_box' },
+    },
+    size: { dimensions: { length: 4, width: 3, height: 1 } },
+    scale: 100,
+  });
+
+  assert.equal(geometry.index.count, 6);
+});
+
+test('advanced mesh height symmetry preserves bounding dimensions', () => {
+  const geometry = buildShapeGeometry({
+    shape: {
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 0, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 2, z: 0 },
+            { id: 'v004', x: 0, y: 2, z: 0 },
+            { id: 'v005', x: 0, y: 0, z: 1 },
+            { id: 'v006', x: 4, y: 0, z: 1 },
+            { id: 'v007', x: 4, y: 2, z: 1 },
+            { id: 'v008', x: 0, y: 2, z: 1 },
+          ],
+          faces: [
+            { id: 'f001', vertices: ['v001', 'v002', 'v003', 'v004'] },
+            { id: 'f002', vertices: ['v005', 'v008', 'v007', 'v006'] },
+          ],
+        },
+      },
+      collision: { mode: 'base_box' },
+    },
+    size: { dimensions: { length: 4, width: 3, height: 1 } },
+    scale: 100,
+    symmetry: { height: true },
+  });
+
+  assert.deepEqual(boundsOf(geometry), {
+    min: { x: -150, y: -200, z: 0 },
+    max: { x: 50, y: 200, z: 100 },
+  });
+});
+
+test('custom_face operation is added to generated geometry', () => {
+  const geometry = buildShapeGeometry({
+    shape: {
+      generation: {
+        mode: 'voxel_grid',
+        operations: [{
+          id: 'custom_face_p1__p2__p3',
+          type: 'custom_face',
+          scope: { kind: 'custom_face' },
+          points: [
+            { x: 0, y: 0, z: 1 },
+            { x: 4, y: 0, z: 1 },
+            { x: 2, y: 1.5, z: 0.5 },
+          ],
+        }],
+      },
+    },
+    size: { dimensions: { length: 4, width: 3, height: 1 } },
+    scale: 100,
+  });
+
+  assert.ok(geometry.index.count > 36);
+  assert.deepEqual(boundsOf(geometry), {
+    min: { x: -150, y: -200, z: 0 },
+    max: { x: 150, y: 200, z: 100 },
+  });
+});
+
+test('cut operation clips the generated geometry and keeps it closed', () => {
+  const geometry = buildShapeGeometry({
+    shape: {
+      generation: {
+        mode: 'voxel_grid',
+        operations: [{
+          id: 'cut_top',
+          type: 'cut',
+          scope: { kind: 'cut' },
+          keep_side: 'inverse',
+          points: [
+            { x: 0, y: 0, z: 0.5 },
+            { x: 4, y: 0, z: 0.5 },
+            { x: 0, y: 3, z: 0.5 },
+          ],
+        }],
+      },
+    },
+    size: { dimensions: { length: 4, width: 3, height: 1 } },
+    scale: 100,
+  });
+
+  assert.deepEqual(boundsOf(geometry), {
+    min: { x: -150, y: -200, z: 50 },
+    max: { x: 150, y: 200, z: 100 },
+  });
+  assert.ok(geometry.index.count > 0);
+});

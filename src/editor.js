@@ -2,7 +2,70 @@ import './style.css';
 import 'remixicon/fonts/remixicon.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { buildShapeGeometry, catalogCellCenterVector, catalogPointVector, createCatalogReservationBox } from './shape-engine.js';
+import { catalogAnchorToWorld } from './3d/core/anchors.js';
+import { createCatalogLookup } from './3d/core/catalogLookup.js';
+import { catalogCellCenterVector, createCatalogReservationBox } from './3d/core/bounds.js';
+import { buildShapeGeometry, catalogPointVector } from './3d/core/meshGeneration.js';
+import { getRenderableEditorAnchors } from './3d/editor/editorAnchors.js';
+import {
+  deriveAdvancedModePreviewSummary,
+  EDITOR_MODES,
+  isEditorAdvancedMode,
+  normalizeEditorMode,
+  switchEditorModeState,
+} from './3d/editor/editorMode.js';
+import { generateEditorPointGrid, summarizeEditorPointGrid } from './3d/editor/editorPointGrid.js';
+import {
+  clearAdvancedPointSelection,
+  selectAdvancedPoint,
+  summarizeAdvancedPointSelection,
+} from './3d/editor/editorPointSelection.js';
+import {
+  createAdvancedDraftEdge,
+  createAdvancedDraftEdgesFromSelection,
+  getAdvancedDraftEdgesForShape,
+  normalizeAdvancedEdgeSelection,
+  removeAdvancedDraftEdgesById,
+  selectAdvancedEdge,
+} from './3d/editor/editorEdges.js';
+import {
+  createAdvancedDraftFace,
+  getAdvancedDraftFacesForShape,
+  removeInvalidDraftFaces,
+} from './3d/editor/editorFaces.js';
+import {
+  createCustomFaceOperation,
+  getCustomFaceOperations,
+  removeCustomFaceOperationById,
+  validateCustomFaceOperation,
+} from './3d/editor/editorCustomFaceOperations.js';
+import {
+  createCutOperation,
+  getCutOperations,
+  validateCutOperation,
+} from './3d/editor/editorCutOperations.js';
+import { deriveEditorPreviewState } from './3d/editor/editorSimpleMode.js';
+import { createEditorFitPreviewPlan, getEditorPreviewTargetZ } from './3d/editor/editorViewport.js';
+import {
+  getEditorAvailableVariantIndexes,
+  getEditorCatalogPiecesForBase,
+  getEditorRecipesForBase,
+  getEditorShapesForBase,
+  getEditorSpecsForBase,
+  shapeBelongsToEditorBase,
+} from './3d/editor/variantSelection.js';
+import { compileEditorCatalog } from './3d/editor/editorShapeCompiler.js';
+import {
+  ADVANCED_MESH_DEFAULT_GRID_STEP,
+  addAdvancedMeshVertex,
+  createAdvancedMeshFace,
+  deleteAdvancedMeshFace,
+  deleteAdvancedMeshVertex,
+  ensureAdvancedMeshGeneration,
+  getAdvancedMeshGridStep,
+  updateAdvancedMeshVertex,
+  validateAdvancedMeshDefinition,
+} from './advanced-mesh.js';
 import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { NAVIGATION_CUBE_VIEW_IDS, createNavigationCubeViewApi } from './navigation-cube.js';
 import { resolveRuntimePath } from './runtime-paths.js';
@@ -27,16 +90,33 @@ const EDITOR_USER_PREFERENCES_STORAGE_KEY = 'spacecraft.editor_user_preferences.
 const DEFAULT_EDITOR_USER_PREFERENCES = {
   showDeleteButtons: false,
 };
+const ADVANCED_PIECE_DISPLAY_MODES = {
+  PIECE: 'piece',
+  POINTS: 'points',
+};
 
 const state = {
   catalog: null,
   repo: null,
+  editorMode: EDITOR_MODES.SIMPLE,
   selectedBase: null,
   selectedShapeId: null,
   selectedCatalogPieceId: null,
   selectedAnchorId: null,
   selectedFace: null,
   selectedOperationIndex: null,
+  selectedAdvancedVertexId: null,
+  selectedAdvancedFaceId: null,
+  selectedAdvancedPointIds: [],
+  selectedAdvancedEdgeIds: [],
+  selectedAdvancedDraftFaceId: null,
+  selectedAdvancedCustomFaceOperationId: null,
+  advancedDraftOperationType: 'custom_face',
+  advancedCutKeepSide: 'normal',
+  advancedDraftEdgesByShapeId: {},
+  advancedDraftFacesByShapeId: {},
+  advancedFaceDraftVertexIds: [],
+  advancedPieceDisplayMode: ADVANCED_PIECE_DISPLAY_MODES.PIECE,
   message: '',
   activeViewId: NAVIGATION_CUBE_VIEW_IDS.home,
   editorUserPreferences: loadEditorUserPreferences(),
@@ -45,6 +125,21 @@ const state = {
 };
 
 const dom = {
+  editorModeToggleBtn: document.querySelector('#editorModeToggleBtn'),
+  editorAdvancedModePanel: document.querySelector('#editorAdvancedModePanel'),
+  editorAdvancedControls: document.querySelector('#editorAdvancedControls'),
+  editorAdvancedModeSummary: document.querySelector('#editorAdvancedModeSummary'),
+  advancedPieceDisplayPieceInput: document.querySelector('#advancedPieceDisplayPieceInput'),
+  advancedPieceDisplayPointsInput: document.querySelector('#advancedPieceDisplayPointsInput'),
+  advancedDraftFaceListSelect: document.querySelector('#advancedDraftFaceListSelect'),
+  advancedDraftOperationCustomFaceInput: document.querySelector('#advancedDraftOperationCustomFaceInput'),
+  advancedDraftOperationCutInput: document.querySelector('#advancedDraftOperationCutInput'),
+  advancedCutKeepNormalInput: document.querySelector('#advancedCutKeepNormalInput'),
+  advancedCutKeepInverseInput: document.querySelector('#advancedCutKeepInverseInput'),
+  commitAdvancedDraftFaceBtn: document.querySelector('#commitAdvancedDraftFaceBtn'),
+  deleteAdvancedDraftFaceBtn: document.querySelector('#deleteAdvancedDraftFaceBtn'),
+  advancedCustomFaceOperationListSelect: document.querySelector('#advancedCustomFaceOperationListSelect'),
+  deleteAdvancedCustomFaceOperationBtn: document.querySelector('#deleteAdvancedCustomFaceOperationBtn'),
   baseModelTree: document.querySelector('#baseModelTree'),
   selectedBaseSummary: document.querySelector('#selectedBaseSummary'),
   shapeVariantSelect: document.querySelector('#shapeVariantSelect'),
@@ -77,6 +172,23 @@ const dom = {
   shapeLabelInput: document.querySelector('#shapeLabelInput'),
   shapeFamilyInput: document.querySelector('#shapeFamilyInput'),
   shapeStatusSelect: document.querySelector('#shapeStatusSelect'),
+  variantGeometryModeSelect: document.querySelector('#variantGeometryModeSelect'),
+  advancedMeshSummary: document.querySelector('#advancedMeshSummary'),
+  advancedMeshGridStepInput: document.querySelector('#advancedMeshGridStepInput'),
+  advancedVertexXInput: document.querySelector('#advancedVertexXInput'),
+  advancedVertexYInput: document.querySelector('#advancedVertexYInput'),
+  advancedVertexZInput: document.querySelector('#advancedVertexZInput'),
+  addAdvancedVertexBtn: document.querySelector('#addAdvancedVertexBtn'),
+  updateAdvancedVertexBtn: document.querySelector('#updateAdvancedVertexBtn'),
+  deleteAdvancedVertexBtn: document.querySelector('#deleteAdvancedVertexBtn'),
+  addVertexToFaceDraftBtn: document.querySelector('#addVertexToFaceDraftBtn'),
+  clearFaceDraftBtn: document.querySelector('#clearFaceDraftBtn'),
+  createAdvancedFaceBtn: document.querySelector('#createAdvancedFaceBtn'),
+  deleteAdvancedFaceBtn: document.querySelector('#deleteAdvancedFaceBtn'),
+  cancelAdvancedMeshChangesBtn: document.querySelector('#cancelAdvancedMeshChangesBtn'),
+  advancedVertexListSelect: document.querySelector('#advancedVertexListSelect'),
+  advancedFaceListSelect: document.querySelector('#advancedFaceListSelect'),
+  advancedFaceDraftSummary: document.querySelector('#advancedFaceDraftSummary'),
   cellXInput: document.querySelector('#cellXInput'),
   cellYInput: document.querySelector('#cellYInput'),
   cellZInput: document.querySelector('#cellZInput'),
@@ -137,6 +249,98 @@ function clearElement(element) {
 
 function appendElement(element, child) {
   if (element) element.append(child);
+}
+
+function getCurrentEditorMode() {
+  return normalizeEditorMode(state.editorMode);
+}
+
+function editorIsAdvancedMode() {
+  return isEditorAdvancedMode(getCurrentEditorMode());
+}
+
+function getAdvancedPieceDisplayMode() {
+  return state.advancedPieceDisplayMode === ADVANCED_PIECE_DISPLAY_MODES.POINTS
+    ? ADVANCED_PIECE_DISPLAY_MODES.POINTS
+    : ADVANCED_PIECE_DISPLAY_MODES.PIECE;
+}
+
+function advancedPieceDisplayIsPoints() {
+  return editorIsAdvancedMode() && getAdvancedPieceDisplayMode() === ADVANCED_PIECE_DISPLAY_MODES.POINTS;
+}
+
+function setEditorMode(mode) {
+  const previousMode = getCurrentEditorMode();
+  Object.assign(state, switchEditorModeState(state, mode));
+  if (previousMode !== getCurrentEditorMode() && previousMode === EDITOR_MODES.ADVANCED) {
+    resetAdvancedPointSelection();
+    resetAdvancedEdgeSelection();
+  }
+}
+
+function ensureSimpleEditorMode(actionLabel = 'Action indisponible') {
+  if (!editorIsAdvancedMode()) return true;
+  setMessage(`${actionLabel} : repasse en mode simple.`);
+  return false;
+}
+
+function resetAdvancedPointSelection() {
+  state.selectedAdvancedPointIds = clearAdvancedPointSelection();
+}
+
+function applyAdvancedPointSelection(pointId, options = {}) {
+  state.selectedAdvancedPointIds = selectAdvancedPoint(pointId, state.selectedAdvancedPointIds, options);
+}
+
+function resetAdvancedEdgeSelection() {
+  state.selectedAdvancedEdgeIds = [];
+}
+
+function applyAdvancedEdgeSelection(edgeId, options = {}) {
+  state.selectedAdvancedEdgeIds = selectAdvancedEdge(edgeId, state.selectedAdvancedEdgeIds, options);
+}
+
+function getActiveAdvancedDraftEdges() {
+  return getAdvancedDraftEdgesForShape(state.advancedDraftEdgesByShapeId, state.selectedShapeId);
+}
+
+function setActiveAdvancedDraftEdges(edges) {
+  if (!state.selectedShapeId) return;
+  state.advancedDraftEdgesByShapeId[state.selectedShapeId] = edges;
+}
+
+function getActiveAdvancedDraftFaces() {
+  return getAdvancedDraftFacesForShape(state.advancedDraftFacesByShapeId, state.selectedShapeId);
+}
+
+function setActiveAdvancedDraftFaces(faces) {
+  if (!state.selectedShapeId) return;
+  state.advancedDraftFacesByShapeId[state.selectedShapeId] = faces;
+}
+
+function getSelectedAdvancedDraftFace() {
+  return getActiveAdvancedDraftFaces().find((face) => face.id === state.selectedAdvancedDraftFaceId) ?? null;
+}
+
+function getSelectedAdvancedCustomFaceOperation() {
+  const shape = selectedShape();
+  return getAdvancedPlanarOperations(shape?.generation?.operations ?? [])
+    .find((operation) => operation.id === state.selectedAdvancedCustomFaceOperationId) ?? null;
+}
+
+function getAdvancedDraftOperationType() {
+  return state.advancedDraftOperationType === 'cut' ? 'cut' : 'custom_face';
+}
+
+function getAdvancedCutKeepSide() {
+  return state.advancedCutKeepSide === 'inverse' ? 'inverse' : 'normal';
+}
+
+function getAdvancedPlanarOperations(operations = []) {
+  return [
+    ...getCustomFaceOperations(operations),
+    ...getCutOperations(operations),
+  ];
 }
 
 function loadEditorUserPreferences() {
@@ -347,6 +551,10 @@ scene.add(root);
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const cellPickTargets = [];
+const advancedVertexPickTargets = [];
+const advancedPointPickTargets = [];
+const advancedEdgePickTargets = [];
+const shapeSnapshots = new Map();
 let pointerDown = null;
 
 const grid = new THREE.GridHelper(420, 42, 0x5c6370, 0x303640);
@@ -399,18 +607,15 @@ function mountEditorNavigationCube() {
   syncEditorNavigationCubeActiveView();
 }
 
-function mapById(items = []) {
-  return new Map(items.map((item) => [item.id, item]));
-}
-
 function rebuildRepo() {
+  const lookup = createCatalogLookup(state.catalog);
   state.repo = {
-    sizes: mapById(state.catalog.sizes),
-    families: mapById(state.catalog.families),
-    shapes: mapById(state.catalog.shape_variants),
-    specs: mapById(state.catalog.spec_profiles),
-    recipes: mapById(state.catalog.recipes),
-    pieces: mapById(state.catalog.catalog_pieces),
+    sizes: lookup.sizes,
+    families: lookup.families,
+    shapes: lookup.shapeVariants,
+    specs: lookup.specProfiles,
+    recipes: lookup.recipes,
+    pieces: lookup.catalogPieces,
   };
 }
 
@@ -422,6 +627,26 @@ function getRecipe(id) { return state.repo?.recipes.get(id) ?? null; }
 function getPiece(id) { return state.repo?.pieces.get(id) ?? null; }
 function selectedShape() { return getShape(state.selectedShapeId); }
 function selectedPiece() { return getPiece(state.selectedCatalogPieceId); }
+function isAdvancedMeshShape(shape = selectedShape()) { return shape?.generation?.mode === 'advanced_mesh'; }
+
+function storeShapeSnapshot(shapeId = state.selectedShapeId) {
+  const shape = getShape(shapeId);
+  if (!shape) return;
+  shapeSnapshots.set(shapeId, structuredClone(shape));
+}
+
+function restoreSelectedShapeSnapshot() {
+  const shape = selectedShape();
+  const snapshot = shapeSnapshots.get(shape?.id);
+  if (!shape || !snapshot) return false;
+  Object.keys(shape).forEach((key) => { delete shape[key]; });
+  Object.assign(shape, structuredClone(snapshot));
+  state.selectedAdvancedVertexId = null;
+  state.selectedAdvancedFaceId = null;
+  state.advancedFaceDraftVertexIds = [];
+  state.selectedFace = null;
+  return true;
+}
 
 function slugifyId(value) {
   return String(value ?? '')
@@ -601,6 +826,8 @@ function renderBaseModels() {
           const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === shape.id);
           if (piece) state.selectedCatalogPieceId = piece.id;
           state.selectedFace = null;
+          resetAdvancedPointSelection();
+          resetAdvancedEdgeSelection();
           renderAll();
         });
 
@@ -641,6 +868,12 @@ function selectBaseModel(group, sizeId, options = {}) {
   const shape = basePiece ? getShape(basePiece.shape_variant_id) : findShapesForBase(group.family_id, sizeId)[0];
   state.selectedShapeId = shape?.id ?? null;
   state.selectedFace = null;
+  state.selectedAdvancedVertexId = shape?.generation?.visual_mesh?.vertices?.[0]?.id ?? null;
+  state.selectedAdvancedFaceId = shape?.generation?.visual_mesh?.faces?.[0]?.id ?? null;
+  resetAdvancedPointSelection();
+  resetAdvancedEdgeSelection();
+  state.advancedFaceDraftVertexIds = [];
+  if (shape?.id) storeShapeSnapshot(shape.id);
 
   renderAll();
   if (!options.keepView) fitPreview(false);
@@ -653,10 +886,7 @@ function findShapesForSize(sizeId = state.selectedBase?.size_id) {
 }
 
 function shapeBelongsToBase(shape, familyId, sizeId) {
-  if (!shape || !familyId || !sizeId || shape.size_id !== sizeId) return false;
-  const basedOn = shape.metadata?.based_on;
-  if (basedOn === `${familyId}:${sizeId}`) return true;
-  return String(shape.id ?? '').startsWith(`shape_${familyId}_${sizeId}_`);
+  return shapeBelongsToEditorBase(shape, familyId, sizeId);
 }
 
 function findCatalogPiecesForBase() {
@@ -667,34 +897,19 @@ function findCatalogPiecesForBase() {
 }
 
 function findShapesForBase(familyId = state.selectedBase?.family_id, sizeId = state.selectedBase?.size_id) {
-  if (!familyId || !sizeId) return [];
-  const linkedIds = new Set(
-    (state.catalog.catalog_pieces ?? [])
-      .filter((piece) => piece.family_id === familyId && piece.size_id === sizeId)
-      .map((piece) => piece.shape_variant_id),
-  );
-  return (state.catalog.shape_variants ?? [])
-    .filter((shape) => linkedIds.has(shape.id) || shapeBelongsToBase(shape, familyId, sizeId))
-    .sort((a, b) => (Number(a.variant_index) || 0) - (Number(b.variant_index) || 0) || a.id.localeCompare(b.id));
+  return getEditorShapesForBase(state.catalog, familyId, sizeId);
 }
 
 function getCatalogPiecesForBase(familyId, sizeId) {
-  return (state.catalog.catalog_pieces ?? [])
-    .filter((piece) => piece.family_id === familyId && piece.size_id === sizeId)
-    .sort((a, b) => a.label_fr.localeCompare(b.label_fr, 'fr'));
+  return getEditorCatalogPiecesForBase(state.catalog, familyId, sizeId);
 }
 
 function getSpecsForBase(familyId, sizeId) {
-  return (state.catalog.spec_profiles ?? [])
-    .filter((spec) => spec.family_id === familyId && spec.size_id === sizeId)
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return getEditorSpecsForBase(state.catalog, familyId, sizeId);
 }
 
 function getRecipesForBase(familyId, sizeId) {
-  const specIds = new Set(getSpecsForBase(familyId, sizeId).map((spec) => spec.id));
-  return (state.catalog.recipes ?? [])
-    .filter((recipe) => specIds.has(recipe.output_spec_profile_id))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return getEditorRecipesForBase(state.catalog, familyId, sizeId);
 }
 
 function renderShapeSelect() {
@@ -849,6 +1064,12 @@ function isParametricShape(shape) {
 
 function ensureVoxelGeneration(shape) {
   const size = getSize(shape.size_id);
+  if (shape?.generation?.mode === 'advanced_mesh') {
+    ensureAdvancedMeshGeneration(shape, size, {
+      grid_step: Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP,
+    });
+    return;
+  }
   if (isParametricShape(shape)) {
     shape.generation.cells = normalizeCells(shape.generation.cells?.length ? shape.generation.cells : fullCells(size), size);
     shape.generation.operations ??= [];
@@ -1069,6 +1290,177 @@ function createGenerationForVariantType(type, size) {
   };
 }
 
+function getAdvancedMesh(shape = selectedShape()) {
+  return shape?.generation?.visual_mesh ?? null;
+}
+
+function getAdvancedMeshValidation(shape = selectedShape(), size = getSize(shape?.size_id)) {
+  if (!shape || !isAdvancedMeshShape(shape)) return { valid: true, errors: [], warnings: [], gridStep: ADVANCED_MESH_DEFAULT_GRID_STEP };
+  return validateAdvancedMeshDefinition({
+    shape,
+    size,
+    collisionMode: shape?.collision?.mode ?? 'base_box',
+  });
+}
+
+function syncAdvancedVertexInputs(vertexId = state.selectedAdvancedVertexId) {
+  const vertex = getAdvancedMesh()?.vertices?.find((item) => item.id === vertexId) ?? null;
+  if (!vertex) return;
+  if (dom.advancedVertexXInput) dom.advancedVertexXInput.value = vertex.x;
+  if (dom.advancedVertexYInput) dom.advancedVertexYInput.value = vertex.y;
+  if (dom.advancedVertexZInput) dom.advancedVertexZInput.value = vertex.z;
+}
+
+function switchShapeToAdvancedMesh() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size) return false;
+  ensureAdvancedMeshGeneration(shape, size, {
+    seedDefault: true,
+    grid_step: Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP,
+  });
+  shape.metadata ??= {};
+  shape.metadata.variant_type = 'advanced_mesh';
+  state.selectedAdvancedVertexId = shape.generation.visual_mesh?.vertices?.[0]?.id ?? null;
+  state.selectedAdvancedFaceId = shape.generation.visual_mesh?.faces?.[0]?.id ?? null;
+  state.advancedFaceDraftVertexIds = [];
+  markShapeDirty(shape, 'advanced_mesh_enabled');
+  return true;
+}
+
+function switchShapeToSimpleMode() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size) return false;
+  if (!globalThis.confirm('Revenir en mode simple remplace le visual mesh par une base voxel. Continuer ?')) return false;
+  shape.generation = createGenerationForVariantType('block', size);
+  shape.collision = { ...(shape.collision ?? {}), mode: 'generated_from_shape', precision: 'voxel_1x1x1', allow_overlap: false };
+  state.selectedAdvancedVertexId = null;
+  state.selectedAdvancedFaceId = null;
+  state.advancedFaceDraftVertexIds = [];
+  markShapeDirty(shape, 'advanced_mesh_disabled');
+  return true;
+}
+
+function updateVariantGeometryMode() {
+  if (!ensureSimpleEditorMode('Mode géométrie verrouillé')) {
+    renderEditorModeUi();
+    return;
+  }
+  const shape = selectedShape();
+  if (!shape) return;
+  const nextMode = dom.variantGeometryModeSelect?.value;
+  const changed = nextMode === 'advanced_mesh'
+    ? switchShapeToAdvancedMesh()
+    : switchShapeToSimpleMode();
+  if (!changed) {
+    if (dom.variantGeometryModeSelect) dom.variantGeometryModeSelect.value = isAdvancedMeshShape(shape) ? 'advanced_mesh' : 'simple';
+    return;
+  }
+  renderAll();
+}
+
+function readAdvancedVertexInputs() {
+  return {
+    x: Number(dom.advancedVertexXInput?.value),
+    y: Number(dom.advancedVertexYInput?.value),
+    z: Number(dom.advancedVertexZInput?.value),
+  };
+}
+
+function addOrUpdateAdvancedVertex(update = false) {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !isAdvancedMeshShape(shape)) return;
+  const result = update
+    ? updateAdvancedMeshVertex(shape, size, state.selectedAdvancedVertexId, readAdvancedVertexInputs(), {
+      gridStep: Number(dom.advancedMeshGridStepInput?.value) || ADVANCED_MESH_DEFAULT_GRID_STEP,
+    })
+    : addAdvancedMeshVertex(shape, size, readAdvancedVertexInputs(), {
+      gridStep: Number(dom.advancedMeshGridStepInput?.value) || ADVANCED_MESH_DEFAULT_GRID_STEP,
+    });
+  if (!result.ok) {
+    setMessage(result.error);
+    renderAll();
+    return;
+  }
+  state.selectedAdvancedVertexId = result.vertex?.id ?? state.selectedAdvancedVertexId;
+  markShapeDirty(shape, update ? 'advanced_vertex_updated' : 'advanced_vertex_added');
+  setMessage(update ? `Vertex mis à jour : ${state.selectedAdvancedVertexId}.` : `Vertex ajouté : ${state.selectedAdvancedVertexId}.`);
+  renderAll();
+}
+
+function removeAdvancedVertex() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !isAdvancedMeshShape(shape) || !state.selectedAdvancedVertexId) return;
+  const removedVertexId = state.selectedAdvancedVertexId;
+  const result = deleteAdvancedMeshVertex(shape, size, removedVertexId);
+  if (!result.ok) {
+    setMessage(result.error);
+    renderAll();
+    return;
+  }
+  const nextVertex = getAdvancedMesh(shape)?.vertices?.[0]?.id ?? null;
+  state.selectedAdvancedVertexId = nextVertex;
+  state.advancedFaceDraftVertexIds = state.advancedFaceDraftVertexIds.filter((id) => id !== removedVertexId);
+  markShapeDirty(shape, 'advanced_vertex_deleted');
+  setMessage('Vertex supprimé.');
+  renderAll();
+}
+
+function appendSelectedVertexToFaceDraft() {
+  const vertexId = state.selectedAdvancedVertexId;
+  if (!vertexId) return;
+  if (!state.advancedFaceDraftVertexIds.includes(vertexId)) state.advancedFaceDraftVertexIds.push(vertexId);
+  renderAdvancedMeshEditor();
+}
+
+function clearAdvancedFaceDraft() {
+  state.advancedFaceDraftVertexIds = [];
+  renderAdvancedMeshEditor();
+}
+
+function addAdvancedFaceFromDraft() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !isAdvancedMeshShape(shape)) return;
+  const result = createAdvancedMeshFace(shape, size, state.advancedFaceDraftVertexIds);
+  if (!result.ok) {
+    setMessage(result.error);
+    renderAll();
+    return;
+  }
+  state.selectedAdvancedFaceId = result.face.id;
+  state.advancedFaceDraftVertexIds = [];
+  markShapeDirty(shape, 'advanced_face_added');
+  setMessage(`Face ajoutée : ${result.face.id}.`);
+  renderAll();
+}
+
+function removeAdvancedFace() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !isAdvancedMeshShape(shape) || !state.selectedAdvancedFaceId) return;
+  const result = deleteAdvancedMeshFace(shape, size, state.selectedAdvancedFaceId);
+  if (!result.ok) {
+    setMessage(result.error);
+    renderAll();
+    return;
+  }
+  state.selectedAdvancedFaceId = getAdvancedMesh(shape)?.faces?.[0]?.id ?? null;
+  markShapeDirty(shape, 'advanced_face_deleted');
+  setMessage('Face supprimée.');
+  renderAll();
+}
+
+function cancelAdvancedMeshChanges() {
+  if (!restoreSelectedShapeSnapshot()) return;
+  setMessage('Modifications advanced mesh annulées.');
+  rebuildRepo();
+  renderAll();
+}
+
 function getCurrentNewVariantType() {
   return dom.newVariantTypeSelect?.value || 'block';
 }
@@ -1103,6 +1495,7 @@ function createVariantFromBase() {
   state.catalog.shape_variants.push(shape);
   rebuildRepo();
   state.selectedShapeId = id;
+  storeShapeSnapshot(id);
   setMessage(`Variante créée : ${id} (${getVariantTypeLabel(variantType)}).`);
   renderAll();
 }
@@ -1128,6 +1521,7 @@ function duplicateVariant() {
   state.catalog.shape_variants.push(clone);
   rebuildRepo();
   state.selectedShapeId = id;
+  storeShapeSnapshot(id);
   setMessage(`Variante dupliquée : ${id}.`);
   renderAll();
 }
@@ -1262,6 +1656,7 @@ function createCatalogPieceForShape({ familyId, sizeId, shapeId, pieceLabelFr, v
 
 function removeShapesByIds(shapeIds) {
   const ids = new Set(shapeIds);
+  shapeIds.forEach((id) => shapeSnapshots.delete(id));
   state.catalog.shape_variants = (state.catalog.shape_variants ?? []).filter((shape) => !ids.has(shape.id));
 }
 
@@ -1350,6 +1745,7 @@ function renderShapeForm() {
   if (dom.shapeLabelInput) dom.shapeLabelInput.value = shape?.label ?? '';
   if (dom.shapeFamilyInput) dom.shapeFamilyInput.value = shape?.shape_family ?? '';
   if (dom.shapeStatusSelect) dom.shapeStatusSelect.value = shape?.status ?? 'draft';
+  if (dom.variantGeometryModeSelect) dom.variantGeometryModeSelect.value = isAdvancedMeshShape(shape) ? 'advanced_mesh' : 'simple';
   if (!dom.cellSummary) return;
   const cells = shape ? getShapeCells(shape, size) : [];
   setElementText(dom.cellSummary, shape ? [
@@ -1360,6 +1756,155 @@ function renderShapeForm() {
     isParametricShape(shape) ? `type global  : ${shape.generation?.base?.type ?? shape.shape_family}` : '',
     shape.generation?.mode !== 'voxel_grid' && !isParametricShape(shape) ? 'note         : converti en voxel_grid dès modification cellule' : '',
   ].filter(Boolean).join('\n') : 'Aucune variante sélectionnée.');
+}
+
+function renderEditorModeUi() {
+  const advancedMode = editorIsAdvancedMode();
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  const pointGridSummary = advancedMode
+    ? summarizeEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP)
+    : null;
+  const pointSelectionSummary = advancedMode ? summarizeAdvancedPointSelection(state.selectedAdvancedPointIds) : null;
+  if (dom.editorModeToggleBtn) {
+    dom.editorModeToggleBtn.textContent = advancedMode ? 'Mode avancé' : 'Mode normal';
+    dom.editorModeToggleBtn.classList.toggle('active', advancedMode);
+  }
+  if (dom.advancedPieceDisplayPieceInput) dom.advancedPieceDisplayPieceInput.checked = getAdvancedPieceDisplayMode() === ADVANCED_PIECE_DISPLAY_MODES.PIECE;
+  if (dom.advancedPieceDisplayPointsInput) dom.advancedPieceDisplayPointsInput.checked = getAdvancedPieceDisplayMode() === ADVANCED_PIECE_DISPLAY_MODES.POINTS;
+  if (dom.advancedPieceDisplayPieceInput) dom.advancedPieceDisplayPieceInput.disabled = !advancedMode;
+  if (dom.advancedPieceDisplayPointsInput) dom.advancedPieceDisplayPointsInput.disabled = !advancedMode;
+  if (dom.advancedDraftOperationCustomFaceInput) dom.advancedDraftOperationCustomFaceInput.checked = getAdvancedDraftOperationType() === 'custom_face';
+  if (dom.advancedDraftOperationCutInput) dom.advancedDraftOperationCutInput.checked = getAdvancedDraftOperationType() === 'cut';
+  if (dom.advancedCutKeepNormalInput) dom.advancedCutKeepNormalInput.checked = getAdvancedCutKeepSide() === 'normal';
+  if (dom.advancedCutKeepInverseInput) dom.advancedCutKeepInverseInput.checked = getAdvancedCutKeepSide() === 'inverse';
+  if (dom.advancedDraftOperationCustomFaceInput) dom.advancedDraftOperationCustomFaceInput.disabled = !advancedMode;
+  if (dom.advancedDraftOperationCutInput) dom.advancedDraftOperationCutInput.disabled = !advancedMode;
+  if (dom.advancedCutKeepNormalInput) dom.advancedCutKeepNormalInput.disabled = !advancedMode;
+  if (dom.advancedCutKeepInverseInput) dom.advancedCutKeepInverseInput.disabled = !advancedMode;
+  if (dom.editorAdvancedControls) dom.editorAdvancedControls.hidden = !advancedMode;
+  if (dom.editorAdvancedModeSummary) {
+    setElementText(dom.editorAdvancedModeSummary, deriveAdvancedModePreviewSummary({
+      shape,
+      size,
+      selectedCatalogPieceId: state.selectedCatalogPieceId,
+      selectedBase: state.selectedBase,
+      subgridUnit: Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP,
+      pointGridSummary,
+      pointSelectionSummary,
+      edgeCount: getActiveAdvancedDraftEdges().length,
+      faceCount: getActiveAdvancedDraftFaces().length,
+    }));
+  }
+  renderAdvancedFaceOperationControls();
+
+  const lockSelectors = [
+    '#shapeTab input',
+    '#shapeTab select',
+    '#shapeTab button',
+    '#anchorsTab input',
+    '#anchorsTab select',
+    '#anchorsTab button',
+  ];
+  for (const selector of lockSelectors) {
+    for (const element of document.querySelectorAll(selector)) {
+      element.disabled = advancedMode;
+    }
+  }
+}
+
+function renderAdvancedFaceOperationControls() {
+  const draftFaces = getActiveAdvancedDraftFaces();
+  if (!draftFaces.some((face) => face.id === state.selectedAdvancedDraftFaceId)) {
+    state.selectedAdvancedDraftFaceId = draftFaces[0]?.id ?? null;
+  }
+
+  if (dom.advancedDraftFaceListSelect) {
+    clearElement(dom.advancedDraftFaceListSelect);
+    for (const face of draftFaces) {
+      const option = document.createElement('option');
+      option.value = face.id;
+      option.textContent = `${face.id} · ${face.points.join(' → ')}`;
+      option.selected = face.id === state.selectedAdvancedDraftFaceId;
+      appendElement(dom.advancedDraftFaceListSelect, option);
+    }
+    dom.advancedDraftFaceListSelect.disabled = !editorIsAdvancedMode();
+  }
+
+  const advancedPlanarOperations = getAdvancedPlanarOperations(selectedShape()?.generation?.operations ?? []);
+  if (!advancedPlanarOperations.some((operation) => operation.id === state.selectedAdvancedCustomFaceOperationId)) {
+    state.selectedAdvancedCustomFaceOperationId = advancedPlanarOperations[0]?.id ?? null;
+  }
+
+  if (dom.advancedCustomFaceOperationListSelect) {
+    clearElement(dom.advancedCustomFaceOperationListSelect);
+    for (const operation of advancedPlanarOperations) {
+      const option = document.createElement('option');
+      option.value = operation.id;
+      const label = operation.type === 'cut' ? 'coupe' : 'face';
+      option.textContent = `${label} · ${operation.id} · ${operation.point_ids?.join(' → ') ?? ''}`;
+      option.selected = operation.id === state.selectedAdvancedCustomFaceOperationId;
+      appendElement(dom.advancedCustomFaceOperationListSelect, option);
+    }
+    dom.advancedCustomFaceOperationListSelect.disabled = !editorIsAdvancedMode();
+  }
+
+  if (dom.commitAdvancedDraftFaceBtn) dom.commitAdvancedDraftFaceBtn.disabled = !editorIsAdvancedMode() || !draftFaces.length;
+  if (dom.deleteAdvancedDraftFaceBtn) dom.deleteAdvancedDraftFaceBtn.disabled = !editorIsAdvancedMode() || !draftFaces.length;
+  if (dom.deleteAdvancedCustomFaceOperationBtn) dom.deleteAdvancedCustomFaceOperationBtn.disabled = !editorIsAdvancedMode() || !advancedPlanarOperations.length;
+}
+
+function renderAdvancedMeshEditor() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  const advanced = isAdvancedMeshShape(shape);
+  const mesh = getAdvancedMesh(shape);
+  if (advanced && !state.selectedAdvancedVertexId) state.selectedAdvancedVertexId = mesh?.vertices?.[0]?.id ?? null;
+  if (advanced && !state.selectedAdvancedFaceId) state.selectedAdvancedFaceId = mesh?.faces?.[0]?.id ?? null;
+  const report = getAdvancedMeshValidation(shape, size);
+  if (dom.advancedMeshGridStepInput) {
+    dom.advancedMeshGridStepInput.value = advanced ? getAdvancedMeshGridStep(mesh, ADVANCED_MESH_DEFAULT_GRID_STEP) : ADVANCED_MESH_DEFAULT_GRID_STEP;
+  }
+  if (dom.advancedMeshSummary) {
+    setElementText(dom.advancedMeshSummary, !shape ? 'Aucune variante sélectionnée.' : [
+      `mode       : ${advanced ? 'advanced_mesh' : 'simple'}`,
+      `baseBox    : ${size?.dimensions ? `${size.dimensions.length}×${size.dimensions.width}×${size.dimensions.height}` : 'n/a'}`,
+      `collision  : ${shape?.collision?.mode ?? 'n/a'}`,
+      `vertices   : ${mesh?.vertices?.length ?? 0}`,
+      `faces      : ${mesh?.faces?.length ?? 0}`,
+      `grid_step  : ${report.gridStep ?? ADVANCED_MESH_DEFAULT_GRID_STEP}`,
+      `validation : ${report.errors.length} erreur(s), ${report.warnings.length} avertissement(s)`,
+    ].join('\n'));
+  }
+
+  if (dom.advancedVertexListSelect) {
+    clearElement(dom.advancedVertexListSelect);
+    for (const vertex of mesh?.vertices ?? []) {
+      const option = document.createElement('option');
+      option.value = vertex.id;
+      option.textContent = `${vertex.id} · ${vertex.x}, ${vertex.y}, ${vertex.z}`;
+      option.selected = vertex.id === state.selectedAdvancedVertexId;
+      appendElement(dom.advancedVertexListSelect, option);
+    }
+  }
+
+  if (dom.advancedFaceListSelect) {
+    clearElement(dom.advancedFaceListSelect);
+    for (const face of mesh?.faces ?? []) {
+      const option = document.createElement('option');
+      option.value = face.id;
+      option.textContent = `${face.id} · ${face.vertices.join(' → ')}`;
+      option.selected = face.id === state.selectedAdvancedFaceId;
+      appendElement(dom.advancedFaceListSelect, option);
+    }
+  }
+
+  syncAdvancedVertexInputs();
+  if (dom.advancedFaceDraftSummary) {
+    setElementText(dom.advancedFaceDraftSummary, state.advancedFaceDraftVertexIds.length
+      ? `Brouillon face : ${state.advancedFaceDraftVertexIds.join(' → ')}`
+      : 'Brouillon face vide.');
+  }
 }
 
 function updateShapeIdentity() {
@@ -1388,6 +1933,12 @@ function renderOperations() {
 }
 
 function describeShapeOperation(op) {
+  if (op.type === 'custom_face') {
+    return `face · ${op.point_ids?.length ?? 0} points · ${op.scope?.label_fr ?? 'face personnalisée'}`;
+  }
+  if (op.type === 'cut') {
+    return `coupe · ${op.keep_side === 'inverse' ? 'côté B' : 'côté A'} · ${op.point_ids?.length ?? 0} points`;
+  }
   const cell = op.selection?.cell;
   const face = op.selection?.face ?? op.face ?? '?';
   const cellText = cell ? `${cell.x},${cell.y},${cell.z}` : '?';
@@ -1499,6 +2050,11 @@ function operationScopeKey(op) {
 function createOperationFromSelectedFace(type) {
   const shape = selectedShape();
   const selectedFace = state.selectedFace;
+  if (isAdvancedMeshShape(shape)) {
+    setMessage('Mode advanced_mesh : corrections voxel désactivées.');
+    renderOperations();
+    return;
+  }
   if (!shape || !selectedFace) {
     setMessage('Correction refusée : aucune face sélectionnée.');
     renderOperations();
@@ -1539,6 +2095,11 @@ function createOperationFromSelectedFace(type) {
 function removeFaceOperation() {
   const shape = selectedShape();
   if (!shape) return;
+  if (isAdvancedMeshShape(shape)) {
+    setMessage('Mode advanced_mesh : aucune correction voxel à supprimer.');
+    renderOperations();
+    return;
+  }
   ensureVoxelGeneration(shape);
   const operations = shape.generation.operations ?? [];
   let index = -1;
@@ -1563,6 +2124,10 @@ function removeFaceOperation() {
 
 function renderVariantFaceSummary() {
   if (!dom.variantFaceSummary) return;
+  if (isAdvancedMeshShape()) {
+    setElementText(dom.variantFaceSummary, 'Mode advanced_mesh actif. Les corrections voxel par face sont désactivées.');
+    return;
+  }
   const face = state.selectedFace;
   if (!face) {
     setElementText(dom.variantFaceSummary, 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.');
@@ -1989,6 +2554,7 @@ function createBaseReferenceFromModal() {
   state.catalog.shape_variants ??= [];
   state.catalog.shape_variants.push(shape);
   rebuildRepo();
+  storeShapeSnapshot(shape.id);
   const piece = createCatalogPieceForShape({
     familyId,
     sizeId,
@@ -2005,12 +2571,7 @@ function createBaseReferenceFromModal() {
 }
 
 function getAvailableVariantIndexes(familyId, sizeId, maxIndex = 14) {
-  const used = new Set(findShapesForBase(familyId, sizeId).map((shape) => Number(shape.variant_index) || 0));
-  const available = [];
-  for (let index = 2; index <= maxIndex; index += 1) {
-    if (!used.has(index)) available.push(index);
-  }
-  return available;
+  return getEditorAvailableVariantIndexes(state.catalog, familyId, sizeId, maxIndex);
 }
 
 function renderVariantIconGrid() {
@@ -2119,6 +2680,7 @@ function createVariantFromModal() {
   };
   state.catalog.shape_variants ??= [];
   state.catalog.shape_variants.push(shape);
+  storeShapeSnapshot(shape.id);
   rebuildRepo();
   const piece = createCatalogPieceForShape({
     familyId,
@@ -2162,34 +2724,52 @@ function renderPreview() {
   }
 
   cellPickTargets.length = 0;
+  advancedVertexPickTargets.length = 0;
+  advancedPointPickTargets.length = 0;
+  advancedEdgePickTargets.length = 0;
 
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
   if (!shape || !size) return;
 
   ensureVoxelGeneration(shape);
-  const operations = shape.generation?.operations ?? [];
-  const suppressed = getSuppressedCellKeysForOperations(operations, size);
-
-  const allCells = getShapeCells(shape, size).filter((cell) => cell.enabled !== false);
-  const visibleCells = allCells.filter((cell) => !suppressed.has(cellKey(cell.x, cell.y, cell.z)));
-
-  const previewGeometry = buildShapeGeometry({
+  const previewState = deriveEditorPreviewState({
     shape,
     size,
-    scale: CELL_SCALE,
-    symmetry: {},
-    showVoxels: true,
+    advanced: isAdvancedMeshShape(shape),
+    fullCells,
+    getShapeCells,
+    getSuppressedCellKeysForOperations,
+    cellKey,
+    getAdvancedMeshValidation,
   });
-  const preview = meshWithEdges(
-    previewGeometry,
-    createOperationMaterial(),
-    new THREE.LineBasicMaterial({ color: 0x151515, transparent: true, opacity: 0.72 }),
-  );
-  root.add(preview);
+  const advancedMode = editorIsAdvancedMode();
 
-  if (isParametricShape(shape)) renderVoxelGuide(visibleCells, size);
-  renderCellPickProxies(visibleCells, size);
+  if (previewState.shouldRenderMesh && !advancedPieceDisplayIsPoints()) {
+    const previewGeometry = buildShapeGeometry({
+      shape,
+      size,
+      scale: CELL_SCALE,
+      symmetry: {},
+      showVoxels: !previewState.advanced,
+    });
+    const preview = meshWithEdges(
+      previewGeometry,
+      createOperationMaterial(),
+      new THREE.LineBasicMaterial({ color: 0x151515, transparent: true, opacity: 0.72 }),
+    );
+    root.add(preview);
+  }
+
+  if (!advancedMode && isParametricShape(shape) && previewState.shouldRenderVoxelGuide) renderVoxelGuide(previewState.visibleCells, size);
+  if (!advancedMode && previewState.shouldRenderAdvancedHandles) renderAdvancedMeshHandles(shape, size);
+  if (!advancedMode) renderCellPickProxies(previewState.visibleCells, size);
+  if (advancedMode) {
+    renderAdvancedPointGrid(size);
+    renderAdvancedCustomFaceOperations(size);
+    renderAdvancedDraftFaces(size);
+    renderAdvancedDraftEdges(size);
+  }
 
   const boundsBox = createCatalogReservationBox(size, CELL_SCALE, new THREE.Vector3());
   const bounds = new THREE.Box3Helper(boundsBox, SELECTED_COLOR);
@@ -2197,14 +2777,174 @@ function renderPreview() {
 
   const anchorGeom = new THREE.SphereGeometry(CELL_SCALE * 0.1, 16, 10);
   const anchorMat = new THREE.MeshBasicMaterial({ color: ANCHOR_COLOR });
-  for (const anchor of shape.anchors ?? []) {
-    if (anchor.enabled === false) continue;
+  for (const anchor of getRenderableEditorAnchors(shape)) {
     const dot = new THREE.Mesh(anchorGeom, anchorMat);
     dot.position.copy(anchorToWorld(anchor, size));
     root.add(dot);
   }
 
-  renderSelectedFaceHint(size);
+  if (!advancedMode) renderSelectedFaceHint(size);
+}
+
+function renderAdvancedMeshHandles(shape, size) {
+  const mesh = getAdvancedMesh(shape);
+  if (!mesh) return;
+
+  const vertexGeometry = new THREE.SphereGeometry(CELL_SCALE * 0.08, 14, 10);
+  for (const vertex of mesh.vertices ?? []) {
+    const selected = vertex.id === state.selectedAdvancedVertexId;
+    const material = new THREE.MeshBasicMaterial({ color: selected ? SELECTED_COLOR : 0x72c7ff });
+    const marker = new THREE.Mesh(vertexGeometry, material);
+    marker.position.copy(catalogPositionToWorld(vertex, size));
+    marker.userData = { type: 'advanced_vertex', vertexId: vertex.id };
+    advancedVertexPickTargets.push(marker);
+    root.add(marker);
+  }
+
+  if (state.advancedFaceDraftVertexIds.length >= 2) {
+    const positions = [];
+    for (const vertexId of state.advancedFaceDraftVertexIds) {
+      const vertex = mesh.vertices.find((item) => item.id === vertexId);
+      if (!vertex) continue;
+      const world = catalogPositionToWorld(vertex, size);
+      positions.push(world.x, world.y, world.z);
+    }
+    if (positions.length >= 6) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: SELECTED_COLOR }));
+      root.add(line);
+    }
+  }
+}
+
+function renderAdvancedPointGrid(size) {
+  const step = Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP;
+  const points = generateEditorPointGrid(size, step);
+  if (!points.length) return;
+
+  const boundaryGeometry = new THREE.SphereGeometry(CELL_SCALE * 0.045, 10, 8);
+  const interiorGeometry = new THREE.SphereGeometry(CELL_SCALE * 0.028, 8, 6);
+  const boundaryMaterial = new THREE.MeshBasicMaterial({ color: SELECTED_COLOR, transparent: true, opacity: 0.92, depthTest: false });
+  const interiorMaterial = new THREE.MeshBasicMaterial({ color: 0x72c7ff, transparent: true, opacity: 0.24, depthTest: false });
+
+  for (const point of points) {
+    const isSelected = state.selectedAdvancedPointIds.includes(point.id);
+    const marker = new THREE.Mesh(
+      isSelected ? new THREE.SphereGeometry(CELL_SCALE * 0.065, 12, 10) : (point.isBoundary ? boundaryGeometry : interiorGeometry),
+      isSelected
+        ? new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.98, depthTest: false })
+        : (point.isBoundary ? boundaryMaterial : interiorMaterial),
+    );
+    marker.position.copy(catalogPositionToWorld(point, size));
+    marker.userData = { type: 'advanced_point', pointId: point.id };
+    marker.renderOrder = 40;
+    advancedPointPickTargets.push(marker);
+    root.add(marker);
+  }
+}
+
+function renderAdvancedDraftEdges(size) {
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const pointById = new Map(points.map((point) => [point.id, point]));
+  const faceEdgeIds = new Set(getActiveAdvancedDraftFaces().flatMap((face) => face.edges ?? []));
+
+  for (const edge of getActiveAdvancedDraftEdges()) {
+    const pointA = pointById.get(edge.pointA);
+    const pointB = pointById.get(edge.pointB);
+    if (!pointA || !pointB) continue;
+    const worldA = catalogPositionToWorld(pointA, size);
+    const worldB = catalogPositionToWorld(pointB, size);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+      worldA.x, worldA.y, worldA.z,
+      worldB.x, worldB.y, worldB.z,
+    ], 3));
+    const selected = state.selectedAdvancedEdgeIds.includes(edge.id);
+    const coveredByFace = faceEdgeIds.has(edge.id);
+    const line = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+      color: selected ? 0xa8d8ff : (coveredByFace ? 0x050505 : 0x3a8dff),
+      transparent: true,
+      opacity: selected ? 1 : 0.92,
+      linewidth: 3,
+      depthTest: false,
+    }));
+    line.userData = { type: 'advanced_edge', edgeId: edge.id };
+    line.renderOrder = 35;
+    advancedEdgePickTargets.push(line);
+    root.add(line);
+  }
+}
+
+function renderAdvancedDraftFaces(size) {
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const pointById = new Map(points.map((point) => [point.id, point]));
+
+  for (const face of getActiveAdvancedDraftFaces()) {
+    if ((face.points ?? []).length < 3) continue;
+    const positions = [];
+    for (const pointId of face.points) {
+      const point = pointById.get(pointId);
+      if (!point) continue;
+      const world = catalogPositionToWorld(point, size);
+      positions.push(world.x, world.y, world.z);
+    }
+    if (positions.length < 9) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const indices = [];
+    const vertexCount = positions.length / 3;
+    for (let index = 1; index < vertexCount - 1; index += 1) {
+      indices.push(0, index, index + 1);
+    }
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      color: 0x2f8fff,
+      transparent: true,
+      opacity: 0.94,
+      side: THREE.DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    }));
+    mesh.renderOrder = 30;
+    root.add(mesh);
+  }
+}
+
+function renderAdvancedCustomFaceOperations(size) {
+  const operations = getAdvancedPlanarOperations(selectedShape()?.generation?.operations ?? []);
+  for (const operation of operations) {
+    const points = Array.isArray(operation.points) ? operation.points : [];
+    if (points.length < 3) continue;
+    const positions = [];
+    for (const point of points) {
+      const world = catalogPositionToWorld(point, size);
+      positions.push(world.x, world.y, world.z);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const indices = [];
+    const vertexCount = positions.length / 3;
+    for (let index = 1; index < vertexCount - 1; index += 1) {
+      indices.push(0, index, index + 1);
+    }
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      color: operation.type === 'cut' ? 0xff7b5c : 0x5cd6ff,
+      transparent: true,
+      opacity: operation.type === 'cut' ? 0.42 : 0.55,
+      side: THREE.DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+    }));
+    mesh.renderOrder = 24;
+    root.add(mesh);
+  }
 }
 
 function renderCellPickProxies(cells, size) {
@@ -2305,7 +3045,7 @@ function cellCenterToWorld(cell, size) {
 }
 
 function anchorToWorld(anchor, size) {
-  return catalogPointVector(anchor.position ?? { x: 0, y: 0, z: 0 }, size.dimensions, CELL_SCALE);
+  return catalogAnchorToWorld(anchor.position, size.dimensions, CELL_SCALE);
 }
 
 function selectedFaceToWorld(size, selectedFace = state.selectedFace) {
@@ -2360,10 +3100,8 @@ function fitPreview(renderNow = true) {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
   if (!size) return;
-  const maxSize = Math.max(size.dimensions.length, size.dimensions.width, size.dimensions.height) * CELL_SCALE;
-  const center = new THREE.Vector3(0, 0, (Number(size.dimensions.height) || 1) * CELL_SCALE / 2);
-  const distance = Math.max(180, maxSize * 2.4);
-  editorViewController?.resetView({ target: center, distance });
+  const plan = createEditorFitPreviewPlan(size, CELL_SCALE);
+  editorViewController?.resetView(plan);
   syncEditorNavigationCubeActiveView();
   if (renderNow) renderer.render(scene, camera);
 }
@@ -2371,7 +3109,7 @@ function fitPreview(renderNow = true) {
 function resetPreview() {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
-  const targetZ = size ? (Number(size.dimensions.height) || 1) * CELL_SCALE / 2 : 0;
+  const targetZ = size ? getEditorPreviewTargetZ(size, CELL_SCALE) : 0;
   editorViewController?.resetView({ target: new THREE.Vector3(0, 0, targetZ) });
   syncEditorNavigationCubeActiveView();
 }
@@ -2383,6 +3121,7 @@ function renderStats() {
   const cells = shape ? getShapeCells(shape, size) : [];
   setElementText(dom.stats, [
     `mode       : éditeur catalogue`,
+    `ui mode    : ${getCurrentEditorMode()}`,
     `schéma     : ${state.catalog?.schema_version ?? 'inconnu'}`,
     `modèle     : ${base ? `${base.piece_label_fr} ${base.size_id}` : 'aucun'}`,
     `famille    : ${base?.family_id ?? 'n/a'}`,
@@ -2441,9 +3180,15 @@ function validateCatalog() {
     if (!size) errors.push(`${shape.id}: size_id introuvable.`);
     if (!shape.generation?.mode) errors.push(`${shape.id}: generation.mode absent.`);
     if (shape.generation?.mode === 'legacy_mesh') warnings.push(`${shape.id}: legacy_mesh à convertir/corriger en voxel_grid ou opérations paramétriques.`);
-    const cells = getShapeCells(shape, size);
-    if (shape.generation?.mode === 'voxel_grid' && cells.length === 0) warnings.push(`${shape.id}: aucune cellule active.`);
-    if (shape.generation?.mode === 'parametric_shape' && !['point_1', 'point_2', 'point_3'].includes(shape.generation?.base?.type)) errors.push(`${shape.id}: type paramétrique inconnu.`);
+    if (shape.generation?.mode === 'advanced_mesh') {
+      const report = getAdvancedMeshValidation(shape, size);
+      for (const issue of report.errors) errors.push(`${shape.id}: ${issue.message}`);
+      for (const issue of report.warnings) warnings.push(`${shape.id}: ${issue.message}`);
+    } else {
+      const cells = getShapeCells(shape, size);
+      if (shape.generation?.mode === 'voxel_grid' && cells.length === 0) warnings.push(`${shape.id}: aucune cellule active.`);
+      if (shape.generation?.mode === 'parametric_shape' && !['point_1', 'point_2', 'point_3'].includes(shape.generation?.base?.type)) errors.push(`${shape.id}: type paramétrique inconnu.`);
+    }
     for (const anchor of shape.anchors ?? []) {
       if (!anchor.position || !anchor.normal) errors.push(`${shape.id}/${anchor.id}: position ou normal absent.`);
     }
@@ -2461,14 +3206,30 @@ function validateSelectedShape() {
   const size = getSize(shape?.size_id);
   if (!shape) return { errors: ['Aucune variante sélectionnée.'], warnings };
   if (!size) errors.push(`${shape.id}: taille introuvable.`);
-  ensureVoxelGeneration(shape);
-  const cells = getShapeCells(shape, size);
-  if (!cells.length) errors.push(`${shape.id}: aucune cellule active.`);
-  for (const op of shape.generation.operations ?? []) {
-    if (!['round', 'chamfer', 'slope', 'cut'].includes(op.type)) errors.push(`${shape.id}: opération inconnue ${op.type}.`);
-    if (op.type === 'round' && Number(op.radius) !== 1) errors.push(`${shape.id}: arrondi avec rayon différent de 1.`);
-    if (op.type === 'chamfer' && Number(op.size) !== 0.5) errors.push(`${shape.id}: chanfrein avec taille différente de 0.5.`);
-    if (!op.scope?.kind) warnings.push(`${shape.id}: opération ${op.type} sans scope détaillé.`);
+  if (isAdvancedMeshShape(shape)) {
+    const report = getAdvancedMeshValidation(shape, size);
+    for (const issue of report.errors) errors.push(`${shape.id}: ${issue.message}`);
+    for (const issue of report.warnings) warnings.push(`${shape.id}: ${issue.message}`);
+  } else {
+    ensureVoxelGeneration(shape);
+    const cells = getShapeCells(shape, size);
+    if (!cells.length) errors.push(`${shape.id}: aucune cellule active.`);
+    for (const op of shape.generation.operations ?? []) {
+      if (!['round', 'chamfer', 'slope', 'cut', 'custom_face'].includes(op.type)) errors.push(`${shape.id}: opération inconnue ${op.type}.`);
+      if (op.type === 'round' && Number(op.radius) !== 1) errors.push(`${shape.id}: arrondi avec rayon différent de 1.`);
+      if (op.type === 'chamfer' && Number(op.size) !== 0.5) errors.push(`${shape.id}: chanfrein avec taille différente de 0.5.`);
+      if (op.type === 'custom_face') {
+        const report = validateCustomFaceOperation(op, size);
+        for (const issue of report.errors) errors.push(`${shape.id}: custom_face ${issue}.`);
+        for (const issue of report.warnings) warnings.push(`${shape.id}: custom_face ${issue}.`);
+      }
+      if (op.type === 'cut') {
+        const report = validateCutOperation(op, size);
+        for (const issue of report.errors) errors.push(`${shape.id}: cut ${issue}.`);
+        for (const issue of report.warnings) warnings.push(`${shape.id}: cut ${issue}.`);
+      }
+      if (!op.scope?.kind) warnings.push(`${shape.id}: opération ${op.type} sans scope détaillé.`);
+    }
   }
   for (const anchor of shape.anchors ?? []) {
     if (!anchor.position || !anchor.face) errors.push(`${shape.id}/${anchor.id}: ancre sans position ou face.`);
@@ -2488,8 +3249,31 @@ function getCatalogFileName(suffix = '') {
   return suffix ? `${base}.${suffix}.json` : `${base}.json`;
 }
 
-function downloadCatalogFile(filename = getCatalogFileName()) {
-  const blob = new Blob([`${JSON.stringify(state.catalog, null, 2)}\n`], { type: 'application/json' });
+function getAdvancedDraftStateByShapeId() {
+  const shapeIds = new Set([
+    ...Object.keys(state.advancedDraftEdgesByShapeId ?? {}),
+    ...Object.keys(state.advancedDraftFacesByShapeId ?? {}),
+  ]);
+  const result = {};
+  for (const shapeId of shapeIds) {
+    result[shapeId] = {
+      edgeCount: getAdvancedDraftEdgesForShape(state.advancedDraftEdgesByShapeId, shapeId).length,
+      faceCount: getAdvancedDraftFacesForShape(state.advancedDraftFacesByShapeId, shapeId).length,
+    };
+  }
+  return result;
+}
+
+function buildCompiledCatalogOutput() {
+  return compileEditorCatalog({
+    catalog: state.catalog,
+    sizes: state.catalog?.sizes ?? [],
+    draftStateByShapeId: getAdvancedDraftStateByShapeId(),
+  });
+}
+
+function downloadCatalogFile(filename = getCatalogFileName(), payload = state.catalog) {
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -2500,11 +3284,11 @@ function downloadCatalogFile(filename = getCatalogFileName()) {
   URL.revokeObjectURL(url);
 }
 
-async function writeCatalogToProjectFile() {
+async function writeCatalogToProjectFile(payload = state.catalog) {
   const response = await fetch(CATALOG_WRITE_URL, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(state.catalog),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -2521,13 +3305,25 @@ function saveDraft() {
     shape.status = 'draft';
     markShapeDirty(shape, 'draft_saved');
   }
-  downloadCatalogFile(getCatalogFileName('draft'));
+  const compiled = buildCompiledCatalogOutput();
+  if (!compiled.ok) {
+    setMessage(`Export brouillon refusé : ${compiled.errors.join(' | ')}`);
+    renderAll(false);
+    return;
+  }
+  downloadCatalogFile(getCatalogFileName('draft'), compiled.catalog);
   setMessage('Brouillon exporté en fichier JSON. Aucun stockage navigateur utilisé.');
   renderAll();
 }
 
 async function publishCatalogToAssembly() {
-  const validation = validateCatalog(state.catalog);
+  const compiled = buildCompiledCatalogOutput();
+  if (!compiled.ok) {
+    setMessage(`Publication Assembly refusée : ${compiled.errors.join(' | ')}`);
+    renderAll(false);
+    return;
+  }
+  const validation = validateCatalog(compiled.catalog);
   if (validation.errors.length) {
     setMessage(`Publication Assembly refusée : ${validation.errors.length} erreur(s) catalogue.`);
     renderValidationReport();
@@ -2535,10 +3331,10 @@ async function publishCatalogToAssembly() {
   }
 
   try {
-    const result = await writeCatalogToProjectFile();
+    const result = await writeCatalogToProjectFile(compiled.catalog);
     setMessage(`Catalogue écrit dans ${result.path ?? 'public/data/4x3x1_catalog.json'} : ${state.catalog.catalog_pieces?.length ?? 0} entrée(s), ${state.catalog.shape_variants?.length ?? 0} variante(s). Recharge Assembly pour lire ce fichier.`);
   } catch (error) {
-    downloadCatalogFile(getCatalogFileName('publish'));
+    downloadCatalogFile(getCatalogFileName('publish'), compiled.catalog);
     setMessage(`Écriture directe indisponible. Catalogue téléchargé : remplace public/data/4x3x1_catalog.json manuellement. Détail : ${error.message}`);
   }
 
@@ -2582,7 +3378,9 @@ function renderAll(redrawPreview = true) {
   renderShapeSelect();
   renderCatalogPieceSelect();
   renderSelectedBaseSummary();
+  renderEditorModeUi();
   renderShapeForm();
+  renderAdvancedMeshEditor();
   renderOperations();
   renderAnchors();
   renderSpecProfileSelect();
@@ -2611,7 +3409,15 @@ function downloadJson(filename, payload) {
 }
 
 function exportCatalog() {
-  downloadJson('spacecraft_rich_catalog.json', state.catalog);
+  const compiled = buildCompiledCatalogOutput();
+  if (!compiled.ok) {
+    setMessage(`Export refusé : ${compiled.errors.join(' | ')}`);
+    renderAll(false);
+    return;
+  }
+  downloadJson('spacecraft_rich_catalog.json', compiled.catalog);
+  setMessage('Catalogue compilé exporté.');
+  renderAll(false);
 }
 
 function faceFromIntersection(intersection) {
@@ -2626,12 +3432,269 @@ function faceFromIntersection(intersection) {
   return normal.z < 0 ? 'bottom' : 'top';
 }
 
-function pickVoxelFace(event) {
-  if (!cellPickTargets.length) return;
+function setPointerFromEditorEvent(event) {
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+}
+
+function pickAdvancedPoint(event) {
+  if (!editorIsAdvancedMode() || !advancedPointPickTargets.length) return false;
+  setPointerFromEditorEvent(event);
   raycaster.setFromCamera(pointer, camera);
+  const pointHits = raycaster.intersectObjects(advancedPointPickTargets, false);
+  if (!pointHits.length) return false;
+  const pointId = pointHits[0].object.userData.pointId;
+  applyAdvancedPointSelection(pointId, { multi: event.shiftKey });
+  renderAll();
+  return true;
+}
+
+function pickAdvancedEdge(event) {
+  if (!editorIsAdvancedMode() || !advancedEdgePickTargets.length) return false;
+  setPointerFromEditorEvent(event);
+  raycaster.params.Line.threshold = 12;
+  raycaster.setFromCamera(pointer, camera);
+  const edgeHits = raycaster.intersectObjects(advancedEdgePickTargets, false);
+  if (!edgeHits.length) return false;
+  const edgeId = edgeHits[0].object.userData.edgeId;
+  applyAdvancedEdgeSelection(edgeId, { multi: event.shiftKey });
+  renderAll(false);
+  return true;
+}
+
+function createAdvancedDraftEdgeFromSelection() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !editorIsAdvancedMode()) return false;
+
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const pointMap = new Map(points.map((point) => [point.id, point]));
+  const result = createAdvancedDraftEdgesFromSelection({
+    shapeId: shape.id,
+    selectedPointIds: state.selectedAdvancedPointIds,
+    existingEdges: getActiveAdvancedDraftEdges(),
+    pointMap,
+  });
+
+  if (!result.created) {
+    const messageByReason = {
+      insufficient_points: 'Ligne refusée : sélectionne 2 points.',
+      too_many_points: 'Ligne refusée : sélectionne exactement 2 points.',
+      unsupported_point_count: 'Ligne refusée : auto-création dispo pour triangle (3) et quadrilatère/parallélogramme (4) uniquement.',
+      invalid_points: 'Ligne refusée : points invalides.',
+      unknown_points: 'Ligne refusée : points hors grille active.',
+      duplicate_edge: 'Ligne refusée : doublon.',
+      non_coplanar: 'Ligne refusée : points non coplanaires.',
+      missing_shape: 'Ligne refusée : aucune variante active.',
+    };
+    setMessage(messageByReason[result.reason] ?? 'Ligne refusée.');
+    renderAll(false);
+    return false;
+  }
+
+  const nextEdges = [...getActiveAdvancedDraftEdges(), ...result.edges];
+  setActiveAdvancedDraftEdges(nextEdges);
+  state.selectedAdvancedEdgeIds = result.loopEdgeIds ?? result.edges.map((edge) => edge.id);
+  const createdCount = result.edges.length;
+  const reusedCount = Number(result.reusedEdgeCount) || 0;
+  let createdLabel = '';
+  if (!createdCount && reusedCount) createdLabel = `Boucle réutilisée : ${reusedCount} ligne(s) déjà présente(s).`;
+  else if (createdCount === 1) createdLabel = reusedCount ? '1 ligne créée, boucle complétée avec lignes existantes.' : '1 ligne créée.';
+  else createdLabel = reusedCount ? `${createdCount} lignes créées, boucle complétée avec lignes existantes.` : `${createdCount} lignes créées.`;
+  setMessage(createdLabel);
+  renderAll();
+  return true;
+}
+
+function deleteSelectedAdvancedDraftEdges() {
+  if (!state.selectedAdvancedEdgeIds.length) return false;
+  const nextEdges = removeAdvancedDraftEdgesById(getActiveAdvancedDraftEdges(), state.selectedAdvancedEdgeIds);
+  setActiveAdvancedDraftEdges(nextEdges);
+  const validEdgeIds = nextEdges.map((edge) => edge.id);
+  setActiveAdvancedDraftFaces(removeInvalidDraftFaces(getActiveAdvancedDraftFaces(), validEdgeIds));
+  resetAdvancedEdgeSelection();
+  setMessage('Ligne(s) supprimée(s).');
+  renderAll();
+  return true;
+}
+
+function createAdvancedDraftFaceFromSelection() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  if (!shape || !size || !editorIsAdvancedMode()) return false;
+
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const pointMap = new Map(points.map((point) => [point.id, point]));
+  let activeEdges = getActiveAdvancedDraftEdges();
+  let selectedEdgeIds = normalizeAdvancedEdgeSelection(state.selectedAdvancedEdgeIds);
+
+  if (!selectedEdgeIds.length && state.selectedAdvancedPointIds.length > 4) {
+    setMessage('Face refusée : auto-création dispo pour triangle (3) et quadrilatère/parallélogramme (4) uniquement.');
+    renderAll(false);
+    return false;
+  }
+
+  if (!selectedEdgeIds.length && state.selectedAdvancedPointIds.length >= 3) {
+    const edgeResult = createAdvancedDraftEdgesFromSelection({
+      shapeId: shape.id,
+      selectedPointIds: state.selectedAdvancedPointIds,
+      existingEdges: activeEdges,
+      pointMap,
+    });
+    if (!edgeResult.created) {
+      const messageByReason = {
+        unsupported_point_count: 'Face refusée : auto-création dispo pour triangle (3) et quadrilatère/parallélogramme (4) uniquement.',
+        invalid_points: 'Face refusée : points invalides.',
+        unknown_points: 'Face refusée : points hors grille active.',
+        non_coplanar: 'Face refusée : points non coplanaires.',
+        missing_shape: 'Face refusée : aucune variante active.',
+      };
+      setMessage(messageByReason[edgeResult.reason] ?? 'Face refusée.');
+      renderAll(false);
+      return false;
+    }
+    if (edgeResult.edges.length) {
+      activeEdges = [...activeEdges, ...edgeResult.edges];
+      setActiveAdvancedDraftEdges(activeEdges);
+    }
+    selectedEdgeIds = edgeResult.loopEdgeIds ?? [];
+    state.selectedAdvancedEdgeIds = selectedEdgeIds;
+  }
+
+  const result = createAdvancedDraftFace({
+    shapeId: shape.id,
+    selectedEdgeIds,
+    selectedPointIds: state.selectedAdvancedPointIds,
+    edges: activeEdges,
+    pointMap,
+  });
+
+  if (!result.created) {
+    const messageByReason = {
+      insufficient_edges: 'Face refusée : sélectionne au moins 3 lignes.',
+      unknown_edges: 'Face refusée : sélection incohérente.',
+      open_loop: 'Face refusée : boucle non fermée.',
+      unsupported_point_count: 'Face refusée : auto-création dispo pour triangle (3) et quadrilatère/parallélogramme (4) uniquement.',
+      non_coplanar: 'Face refusée : points non coplanaires.',
+      self_crossed: 'Face refusée : face auto-croisée.',
+      degenerate_face: 'Face refusée : normal impossible à calculer.',
+      missing_shape: 'Face refusée : aucune variante active.',
+    };
+    setMessage(messageByReason[result.reason] ?? 'Face refusée.');
+    renderAll(false);
+    return false;
+  }
+
+  const nextFaces = [...getActiveAdvancedDraftFaces()];
+  if (!nextFaces.some((face) => face.id === result.face.id)) nextFaces.push(result.face);
+  setActiveAdvancedDraftFaces(nextFaces);
+  state.selectedAdvancedDraftFaceId = result.face.id;
+  setMessage(`Face créée : ${result.face.id}.`);
+  renderAll();
+  return true;
+}
+
+function deleteSelectedAdvancedDraftFace() {
+  const selectedFace = getSelectedAdvancedDraftFace();
+  if (!selectedFace) return false;
+  setActiveAdvancedDraftFaces(getActiveAdvancedDraftFaces().filter((face) => face.id !== selectedFace.id));
+  state.selectedAdvancedDraftFaceId = null;
+  setMessage(`Face draft supprimée : ${selectedFace.id}.`);
+  renderAll();
+  return true;
+}
+
+function commitSelectedAdvancedDraftFaceToOperation() {
+  const shape = selectedShape();
+  const size = getSize(shape?.size_id);
+  const selectedFace = getSelectedAdvancedDraftFace();
+  if (!shape || !size || !selectedFace) return false;
+
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const pointMap = new Map(points.map((point) => [point.id, point]));
+  const result = getAdvancedDraftOperationType() === 'cut'
+    ? createCutOperation({
+      shapeId: shape.id,
+      face: selectedFace,
+      pointMap,
+      keepSide: getAdvancedCutKeepSide(),
+    })
+    : createCustomFaceOperation({
+      shapeId: shape.id,
+      face: selectedFace,
+      pointMap,
+    });
+  if (!result.created) {
+    const messageByReason = {
+      missing_shape: 'Opération refusée : aucune variante active.',
+      invalid_face: 'Opération refusée : face draft invalide.',
+      unknown_points: 'Opération refusée : points introuvables.',
+      degenerate_face: 'Opération refusée : face dégénérée.',
+    };
+    setMessage(messageByReason[result.reason] ?? 'Opération refusée.');
+    renderAll(false);
+    return false;
+  }
+
+  const validation = result.operation.type === 'cut'
+    ? validateCutOperation(result.operation, size)
+    : validateCustomFaceOperation(result.operation, size);
+  if (!validation.valid) {
+    setMessage(`Opération refusée : ${validation.errors.join(', ')}.`);
+    renderAll(false);
+    return false;
+  }
+
+  shape.generation.operations ??= [];
+  if (shape.generation.operations.some((operation) => operation.id === result.operation.id)) {
+    setMessage(`Opération déjà présente : ${result.operation.id}.`);
+    renderAll(false);
+    return false;
+  }
+
+  shape.generation.operations.push(result.operation);
+  markShapeDirty(shape, `${result.operation.type}_operation_added`);
+  state.selectedOperationIndex = shape.generation.operations.length - 1;
+  state.selectedAdvancedCustomFaceOperationId = result.operation.id;
+  setActiveAdvancedDraftFaces(getActiveAdvancedDraftFaces().filter((face) => face.id !== selectedFace.id));
+  state.selectedAdvancedDraftFaceId = null;
+  setMessage(`Opération créée : ${result.operation.id}.`);
+  renderAll();
+  return true;
+}
+
+function deleteSelectedAdvancedCustomFaceOperation() {
+  const shape = selectedShape();
+  const selectedOperation = getSelectedAdvancedCustomFaceOperation();
+  if (!shape || !selectedOperation) return false;
+
+  shape.generation.operations = removeCustomFaceOperationById(shape.generation.operations ?? [], selectedOperation.id);
+  markShapeDirty(shape, `${selectedOperation.type}_operation_removed`);
+  state.selectedAdvancedCustomFaceOperationId = null;
+  setMessage(`Opération supprimée : ${selectedOperation.id}.`);
+  renderAll();
+  return true;
+}
+
+function pickVoxelFace(event) {
+  if (editorIsAdvancedMode()) return;
+  setPointerFromEditorEvent(event);
+  raycaster.setFromCamera(pointer, camera);
+  if (advancedVertexPickTargets.length) {
+    const vertexHits = raycaster.intersectObjects(advancedVertexPickTargets, false);
+    if (vertexHits.length) {
+      const vertexId = vertexHits[0].object.userData.vertexId;
+      state.selectedAdvancedVertexId = vertexId;
+      if (event.shiftKey && !state.advancedFaceDraftVertexIds.includes(vertexId)) {
+        state.advancedFaceDraftVertexIds.push(vertexId);
+      }
+      syncAdvancedVertexInputs(vertexId);
+      renderAll();
+      return;
+    }
+  }
+  if (!cellPickTargets.length) return;
   const hits = raycaster.intersectObjects(cellPickTargets, false);
   if (!hits.length) return;
   const hit = hits[0];
@@ -2651,6 +3714,7 @@ function pickVoxelFace(event) {
 }
 
 function selectVoxelFace(cell, face = state.selectedFace?.face ?? 'top') {
+  if (editorIsAdvancedMode()) return;
   const normalizedCell = {
     x: Math.floor(Number(cell.x)),
     y: Math.floor(Number(cell.y)),
@@ -2800,6 +3864,48 @@ function bindEditorCellKeyboardNavigation() {
     if (dom.editorUserConfigModal?.classList.contains('open')
       || dom.baseReferenceModal?.classList.contains('open')
       || dom.variantCreationModal?.classList.contains('open')) return;
+    if (editorIsAdvancedMode()) {
+      if (event.key === 'f' || event.key === 'F') {
+        if (createAdvancedDraftFaceFromSelection()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      if (event.key === 'l' || event.key === 'L') {
+        if (createAdvancedDraftEdgeFromSelection()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (state.selectedAdvancedPointIds.length) {
+          resetAdvancedPointSelection();
+          resetAdvancedEdgeSelection();
+          renderAll();
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (deleteSelectedAdvancedDraftEdges()) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        if (state.selectedAdvancedPointIds.length) {
+          resetAdvancedPointSelection();
+          setMessage('Sélection de points effacée.');
+          renderAll(false);
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      return;
+    }
     if (event.ctrlKey || event.altKey || event.metaKey || isEditorTextInputTarget(event.target)) return;
 
     if (isAnchorToggleKey(event)) {
@@ -2831,7 +3937,11 @@ function bindFacePicking() {
     const dx = Math.abs(event.clientX - pointerDown.x);
     const dy = Math.abs(event.clientY - pointerDown.y);
     pointerDown = null;
-    if (dx <= 5 && dy <= 5) pickVoxelFace(event);
+    if (dx <= 5 && dy <= 5) {
+      if (pickAdvancedPoint(event)) return;
+      if (pickAdvancedEdge(event)) return;
+      pickVoxelFace(event);
+    }
   });
 }
 
@@ -2849,6 +3959,12 @@ function bindEvents() {
   bindElement(dom.shapeVariantSelect, 'change', () => {
     state.selectedShapeId = dom.shapeVariantSelect.value;
     state.selectedFace = null;
+    state.selectedAdvancedVertexId = getAdvancedMesh(selectedShape())?.vertices?.[0]?.id ?? null;
+    state.selectedAdvancedFaceId = getAdvancedMesh(selectedShape())?.faces?.[0]?.id ?? null;
+    resetAdvancedPointSelection();
+    resetAdvancedEdgeSelection();
+    state.advancedFaceDraftVertexIds = [];
+    if (state.selectedShapeId) storeShapeSnapshot(state.selectedShapeId);
     const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === state.selectedShapeId);
     if (piece) state.selectedCatalogPieceId = piece.id;
     renderAll();
@@ -2858,6 +3974,12 @@ function bindEvents() {
     state.selectedFace = null;
     const piece = selectedPiece();
     if (piece) state.selectedShapeId = piece.shape_variant_id;
+    state.selectedAdvancedVertexId = getAdvancedMesh(selectedShape())?.vertices?.[0]?.id ?? null;
+    state.selectedAdvancedFaceId = getAdvancedMesh(selectedShape())?.faces?.[0]?.id ?? null;
+    resetAdvancedPointSelection();
+    resetAdvancedEdgeSelection();
+    state.advancedFaceDraftVertexIds = [];
+    if (state.selectedShapeId) storeShapeSnapshot(state.selectedShapeId);
     renderAll();
   });
   bindElement(dom.createVariantBtn, 'click', createVariantFromBase);
@@ -2876,6 +3998,73 @@ function bindEvents() {
   bindElement(dom.shapeLabelInput, 'change', updateShapeIdentity);
   bindElement(dom.shapeFamilyInput, 'change', updateShapeIdentity);
   bindElement(dom.shapeStatusSelect, 'change', updateShapeIdentity);
+  const handleEditorModeToggle = () => {
+    setEditorMode(editorIsAdvancedMode() ? EDITOR_MODES.SIMPLE : EDITOR_MODES.ADVANCED);
+    renderAll();
+  };
+  const handleAdvancedPieceDisplayModeChange = () => {
+    state.advancedPieceDisplayMode = dom.advancedPieceDisplayPointsInput?.checked
+      ? ADVANCED_PIECE_DISPLAY_MODES.POINTS
+      : ADVANCED_PIECE_DISPLAY_MODES.PIECE;
+    renderPreview();
+    renderEditorModeUi();
+  };
+  bindElement(dom.editorModeToggleBtn, 'click', handleEditorModeToggle);
+  bindElement(dom.advancedPieceDisplayPieceInput, 'change', handleAdvancedPieceDisplayModeChange);
+  bindElement(dom.advancedPieceDisplayPointsInput, 'change', handleAdvancedPieceDisplayModeChange);
+  bindElement(dom.advancedDraftOperationCustomFaceInput, 'change', () => {
+    state.advancedDraftOperationType = 'custom_face';
+    renderEditorModeUi();
+  });
+  bindElement(dom.advancedDraftOperationCutInput, 'change', () => {
+    state.advancedDraftOperationType = 'cut';
+    renderEditorModeUi();
+  });
+  bindElement(dom.advancedCutKeepNormalInput, 'change', () => {
+    state.advancedCutKeepSide = 'normal';
+    renderEditorModeUi();
+  });
+  bindElement(dom.advancedCutKeepInverseInput, 'change', () => {
+    state.advancedCutKeepSide = 'inverse';
+    renderEditorModeUi();
+  });
+  bindElement(dom.advancedDraftFaceListSelect, 'change', () => {
+    state.selectedAdvancedDraftFaceId = dom.advancedDraftFaceListSelect?.value ?? null;
+    renderEditorModeUi();
+  });
+  bindElement(dom.commitAdvancedDraftFaceBtn, 'click', commitSelectedAdvancedDraftFaceToOperation);
+  bindElement(dom.deleteAdvancedDraftFaceBtn, 'click', deleteSelectedAdvancedDraftFace);
+  bindElement(dom.advancedCustomFaceOperationListSelect, 'change', () => {
+    state.selectedAdvancedCustomFaceOperationId = dom.advancedCustomFaceOperationListSelect?.value ?? null;
+    renderEditorModeUi();
+  });
+  bindElement(dom.deleteAdvancedCustomFaceOperationBtn, 'click', deleteSelectedAdvancedCustomFaceOperation);
+  bindElement(dom.variantGeometryModeSelect, 'change', updateVariantGeometryMode);
+  bindElement(dom.addAdvancedVertexBtn, 'click', () => addOrUpdateAdvancedVertex(false));
+  bindElement(dom.updateAdvancedVertexBtn, 'click', () => addOrUpdateAdvancedVertex(true));
+  bindElement(dom.deleteAdvancedVertexBtn, 'click', removeAdvancedVertex);
+  bindElement(dom.addVertexToFaceDraftBtn, 'click', appendSelectedVertexToFaceDraft);
+  bindElement(dom.clearFaceDraftBtn, 'click', clearAdvancedFaceDraft);
+  bindElement(dom.createAdvancedFaceBtn, 'click', addAdvancedFaceFromDraft);
+  bindElement(dom.deleteAdvancedFaceBtn, 'click', removeAdvancedFace);
+  bindElement(dom.cancelAdvancedMeshChangesBtn, 'click', cancelAdvancedMeshChanges);
+  bindElement(dom.advancedVertexListSelect, 'change', () => {
+    state.selectedAdvancedVertexId = dom.advancedVertexListSelect?.value ?? null;
+    syncAdvancedVertexInputs();
+    renderPreview();
+  });
+  bindElement(dom.advancedFaceListSelect, 'change', () => {
+    state.selectedAdvancedFaceId = dom.advancedFaceListSelect?.value ?? null;
+    renderAdvancedMeshEditor();
+  });
+  bindElement(dom.advancedMeshGridStepInput, 'change', () => {
+    const shape = selectedShape();
+    if (!shape || !isAdvancedMeshShape(shape)) return;
+    const gridStep = Number(dom.advancedMeshGridStepInput?.value) || ADVANCED_MESH_DEFAULT_GRID_STEP;
+    shape.generation.visual_mesh.grid_step = gridStep;
+    markShapeDirty(shape, 'advanced_grid_step_updated');
+    renderAll();
+  });
   bindElement(dom.addCellBtn, 'click', () => setCell(true));
   bindElement(dom.removeCellBtn, 'click', () => setCell(false));
   bindElement(dom.resetFullBoxBtn, 'click', resetFullBox);
@@ -2917,9 +4106,9 @@ function bindEvents() {
   bindElement(dom.specModal, 'click', (event) => { if (event.target === dom.specModal) closeSpecModal(); });
   bindElement(dom.recipeModal, 'click', (event) => { if (event.target === dom.recipeModal) closeRecipeModal(); });
 
-  for (const button of document.querySelectorAll('.tab-button')) {
+  for (const button of document.querySelectorAll('.editor-overlay-tabs .tab-button')) {
     button.addEventListener('click', () => {
-      document.querySelectorAll('.tab-button').forEach((item) => item.classList.remove('active'));
+      document.querySelectorAll('.editor-overlay-tabs .tab-button').forEach((item) => item.classList.remove('active'));
       document.querySelectorAll('.tab-panel').forEach((item) => item.classList.remove('active'));
       button.classList.add('active');
       document.querySelector(`#${button.dataset.tab}`)?.classList.add('active');

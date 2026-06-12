@@ -3,7 +3,28 @@ import 'remixicon/fonts/remixicon.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { ASSEMBLY_MAGNET_ENABLED, ASSEMBLY_MAGNET_STEP_UNITS } from './assembly-config.js';
-import { buildShapeGeometry, createCatalogReservationBox, catalogPointVector } from './shape-engine.js';
+import { catalogAnchorToWorld, getEffectiveAttachmentAnchors } from './3d/core/anchors.js';
+import { createCatalogLookup } from './3d/core/catalogLookup.js';
+import { createCatalogReservationBox } from './3d/core/bounds.js';
+import { buildShapeGeometry } from './3d/core/meshGeneration.js';
+import { createDoubleSidedColorMaterial } from './3d/core/materials.js';
+import {
+  getAssemblySelectionBatch,
+  hasAssemblySelection,
+  assemblySelectionContainsEntity,
+  applyAssemblySelectionState,
+  normalizeAssemblySelectionEntity,
+  toggleLoosePieceSelection,
+} from './3d/assembly/selection.js';
+import {
+  validateAssemblyGroupConnectivity as validateAssemblyGroupConnectivityCore,
+  getConnectedAssemblyInstanceIds,
+} from './3d/assembly/groups.js';
+import {
+  applyVariantToAssemblyInstance,
+  getAssemblyShapePalettePieces,
+  getAssemblyShapePaletteVariantMap,
+} from './3d/assembly/variants.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { createNavigationCubeViewApi } from './navigation-cube.js';
@@ -280,15 +301,7 @@ async function loadAssemblyCatalog() {
 }
 
 function buildRepository(catalog) {
-  const mapById = (items = []) => new Map(items.map((item) => [item.id, item]));
-  return {
-    sizes: mapById(catalog.sizes),
-    families: mapById(catalog.families),
-    shapeVariants: mapById(catalog.shape_variants),
-    specProfiles: mapById(catalog.spec_profiles),
-    recipes: mapById(catalog.recipes),
-    catalogPieces: mapById(catalog.catalog_pieces),
-  };
+  return createCatalogLookup(catalog);
 }
 
 function getCatalogPieceById(pieceId) {
@@ -350,27 +363,15 @@ function getSelectedAssemblyGroup() {
 }
 
 function normalizeSelectionEntity(entity) {
-  if (!entity?.type || !entity?.id) return null;
-  if (entity.type === 'group') return getAssemblyGroupById(entity.id) ? { type: 'group', id: entity.id } : null;
-  const instance = getInstanceById(entity.id);
-  if (!instance || instance.groupId) return null;
-  return { type: 'piece', id: entity.id };
+  return normalizeAssemblySelectionEntity(entity, { getAssemblyGroupById, getInstanceById });
 }
 
 function getSelectionBatch() {
-  if (Array.isArray(state.selectionBatch) && state.selectionBatch.length) {
-    return state.selectionBatch.map(normalizeSelectionEntity).filter(Boolean);
-  }
-  if (state.selectedEntityType === 'group' && state.selectedId) return [{ type: 'group', id: state.selectedId }];
-  if (state.selectedEntityType === 'piece' && state.selectedId) return [{ type: 'piece', id: state.selectedId }];
-  if (Array.isArray(state.selectedGroupIds) && state.selectedGroupIds.length) {
-    return state.selectedGroupIds.map((id) => normalizeSelectionEntity({ type: 'piece', id })).filter(Boolean);
-  }
-  return [];
+  return getAssemblySelectionBatch(state, { getAssemblyGroupById, getInstanceById });
 }
 
 function hasSelection() {
-  return getSelectionBatch().length > 0;
+  return hasAssemblySelection(state, { getAssemblyGroupById, getInstanceById });
 }
 
 function getSelectedEntityInstanceIds() {
@@ -387,34 +388,18 @@ function getSelectedEntityInstanceIds() {
 }
 
 function selectionContainsEntity(entity) {
-  const candidate = normalizeSelectionEntity(entity);
-  if (!candidate) return false;
-  return getSelectionBatch().some((item) => item.type === candidate.type && item.id === candidate.id);
+  return assemblySelectionContainsEntity(entity, state, { getAssemblyGroupById, getInstanceById });
 }
 
 function applySelectionState(entities = []) {
-  const normalized = [];
-  const seen = new Set();
-  for (const entity of entities) {
-    const resolved = normalizeSelectionEntity(entity);
-    if (!resolved) continue;
-    const key = `${resolved.type}:${resolved.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    normalized.push(resolved);
-  }
-
-  state.selectionBatch = normalized;
-  state.selectedEntityType = null;
-  state.selectedId = null;
-  state.selectedGroupIds = normalized.filter((entity) => entity.type === 'piece').map((entity) => entity.id);
-
-  if (normalized.length === 1) {
-    state.selectedEntityType = normalized[0].type;
-    state.selectedId = normalized[0].id;
-    if (normalized[0].type === 'group') state.selectedGroupIds = [];
-    if (normalized[0].type === 'piece') syncAssemblyPaletteToSelectedInstance();
-  }
+  applyAssemblySelectionState(
+    state,
+    entities,
+    { getAssemblyGroupById, getInstanceById },
+    {
+      onSinglePieceSelected: () => syncAssemblyPaletteToSelectedInstance(),
+    },
+  );
 }
 
 function getInstanceById(instanceId) {
@@ -580,10 +565,7 @@ function createOutlineEdgesOnly(geometry) {
 }
 
 function createMaterial(color = DEFAULT_COLOR) {
-  return new THREE.MeshBasicMaterial({
-    color: new THREE.Color(color),
-    side: THREE.DoubleSide,
-  });
+  return createDoubleSidedColorMaterial(color);
 }
 
 function createAnchorGroup(catalogPiece, symmetry = {}) {
@@ -621,7 +603,7 @@ function getShapeApproxSize(shape) {
 function anchorToMeshPosition(catalogPiece, shape, anchor, symmetry) {
   const size = getSize(catalogPiece.size_id)?.dimensions ?? { length: 1, width: 1, height: 1 };
   const scale = state.catalog?.units?.mesh_unit_scale ?? 100;
-  const vector = catalogPointVector(anchor.position ?? { x: 0, y: 0, z: 0 }, size, scale);
+  const vector = catalogAnchorToWorld(anchor.position, size, scale);
 
   if (symmetry.length) vector.y = -vector.y;
   if (symmetry.width) vector.x = -vector.x;
@@ -872,54 +854,17 @@ function selectPieceMulti(ids = []) {
 }
 
 function togglePieceInMultiSelection(instanceId) {
-  const instance = getInstanceById(instanceId);
-  if (!instance || instance.groupId) return;
-  const baseIds = state.selectedGroupIds.length
-    ? [...state.selectedGroupIds]
-    : (state.selectedEntityType === 'piece' && state.selectedId && !getInstanceById(state.selectedId)?.groupId
-      ? [state.selectedId]
-      : []);
-  const nextIds = baseIds.includes(instanceId)
-    ? baseIds.filter((id) => id !== instanceId)
-    : [...baseIds, instanceId];
+  const nextIds = toggleLoosePieceSelection(state, instanceId, { getInstanceById });
+  if (!nextIds) return;
   selectPieceMulti(nextIds);
 }
 
 function getConnectedInstanceIds(instances) {
-  if (!instances.length) return new Set();
-  const selectedIds = new Set(instances.map((instance) => instance.id));
-  const adjacency = new Map(instances.map((instance) => [instance.id, new Set()]));
-  for (let i = 0; i < instances.length; i += 1) {
-    for (let j = i + 1; j < instances.length; j += 1) {
-      const a = instances[i];
-      const b = instances[j];
-      if (!instancesHaveCompatibleAnchors(a, b)) continue;
-      adjacency.get(a.id)?.add(b.id);
-      adjacency.get(b.id)?.add(a.id);
-    }
-  }
-
-  const connected = new Set();
-  const queue = [instances[0].id];
-  while (queue.length) {
-    const current = queue.shift();
-    if (connected.has(current) || !selectedIds.has(current)) continue;
-    connected.add(current);
-    for (const next of adjacency.get(current) ?? []) {
-      if (!connected.has(next)) queue.push(next);
-    }
-  }
-  return connected;
+  return getConnectedAssemblyInstanceIds(instances, { instancesHaveCompatibleAnchors });
 }
 
 function validateAssemblyGroupConnectivity(instances) {
-  if (instances.length < 2) return { valid: false, message: 'Groupe refusé : sélectionne au moins 2 pièces libres.' };
-  const connectedIds = getConnectedInstanceIds(instances);
-  if (connectedIds.size === instances.length) return { valid: true, message: '' };
-  return {
-    valid: false,
-    message: 'Groupe refusé : toutes les pièces du groupe doivent être reliées entre elles par des ancres compatibles.',
-  };
+  return validateAssemblyGroupConnectivityCore(instances, { instancesHaveCompatibleAnchors });
 }
 
 function selectInstance(id) {
@@ -2386,48 +2331,6 @@ function catalogNormalToWorld(normal, symmetry = {}) {
   return vector.normalize();
 }
 
-function getEffectiveAttachmentAnchors(shape, size) {
-  const anchors = (shape?.anchors ?? []).filter((anchor) => anchor.enabled !== false);
-  if (!anchors.length) return [];
-  if (isSixFacePlaceholderAnchorSet(anchors)) return generateHalfStepFaceAnchors(size);
-  return anchors;
-}
-
-function isSixFacePlaceholderAnchorSet(anchors) {
-  if (anchors.length !== 6) return false;
-  return anchors.every((anchor) => /^anchor_(length|width|height)_(min|max)$/.test(String(anchor.id ?? '')));
-}
-
-function generateHalfStepFaceAnchors(size) {
-  const L = Number(size.length) || 1;
-  const W = Number(size.width) || 1;
-  const H = Number(size.height) || 1;
-  const anchors = [];
-  const values = (max) => {
-    const result = [];
-    for (let v = 0.25; v < max - 1e-9; v += 0.5) result.push(Number(v.toFixed(3)));
-    return result.length ? result : [max / 2];
-  };
-  const xs = values(L);
-  const ys = values(W);
-  const zs = values(H);
-  const push = (id, position, normal, face) => anchors.push({ id, position, normal, face, type: 'standard', enabled: true, status: 'generated' });
-
-  for (const y of ys) for (const z of zs) {
-    push(`anchor_length_min_${y}_${z}`, { x: 0, y, z }, { x: -1, y: 0, z: 0 }, 'length_min');
-    push(`anchor_length_max_${y}_${z}`, { x: L, y, z }, { x: 1, y: 0, z: 0 }, 'length_max');
-  }
-  for (const x of xs) for (const z of zs) {
-    push(`anchor_width_min_${x}_${z}`, { x, y: 0, z }, { x: 0, y: -1, z: 0 }, 'width_min');
-    push(`anchor_width_max_${x}_${z}`, { x, y: W, z }, { x: 0, y: 1, z: 0 }, 'width_max');
-  }
-  for (const x of xs) for (const y of ys) {
-    push(`anchor_height_min_${x}_${y}`, { x, y, z: 0 }, { x: 0, y: 0, z: -1 }, 'height_min');
-    push(`anchor_height_max_${x}_${y}`, { x, y, z: H }, { x: 0, y: 0, z: 1 }, 'height_max');
-  }
-  return anchors;
-}
-
 function getGroupBoundingBoxAt(group, origin) {
   return computeGroupBoundingBox(group, origin);
 }
@@ -3282,51 +3185,29 @@ function renderShapePalette(pieces) {
 function applyCatalogShapeToSelectedInstance(pieceId) {
   const selected = getSelectedInstance();
   const nextPiece = getCatalogPieceById(pieceId);
-  if (!selected || !nextPiece) {
-    setMessage('Sélectionne une pièce dans la scène avant de choisir une forme.');
-    return;
-  }
-
-  const currentPiece = getCatalogPieceById(selected.catalogPieceId);
-  if (!currentPiece) return;
-
-  if (currentPiece.family_id !== nextPiece.family_id || currentPiece.size_id !== nextPiece.size_id) {
-    setMessage('Forme refusée : famille ou taille différente de la pièce sélectionnée.');
-    return;
-  }
-
-  const nextGeometry = buildGeometry(nextPiece, selected.symmetry);
-  const candidateBox = getReservationBoxForCatalogPiece(nextPiece, selected.group.position);
-  if (collidesWithOthers(candidateBox, selected.id)) {
-    nextGeometry.dispose();
-    setMessage('Forme refusée : collision avec une autre pièce.');
-    return;
-  }
-
-  const oldMeshGeometry = selected.mesh.geometry;
-  const oldEdgesGeometry = selected.edges.geometry;
-  const oldAnchorGroup = selected.anchors;
-
-  selected.catalogPieceId = nextPiece.id;
-  selected.label = `${nextPiece.label_fr || nextPiece.id} #${selected.id.replace('placed_', '')}`;
-  selected.mesh.geometry = nextGeometry;
-  selected.edges.geometry = createAssemblyEdgeGeometry(nextPiece, nextGeometry);
-  selected.edges.visible = true;
-  selected.anchors = createAnchorGroup(nextPiece, selected.symmetry);
-  selected.group.remove(oldAnchorGroup);
-  selected.group.add(selected.anchors);
-
-  oldMeshGeometry?.dispose?.();
-  oldEdgesGeometry?.dispose?.();
-  disposeAnchorGroup(oldAnchorGroup);
-
-  state.selectedCatalogPieceId = nextPiece.id;
-  refreshInstanceList();
-  renderCatalogPieceOptions();
-  updateStats();
-  updateSelectionBox();
-  setMessage('Forme appliquée à la pièce sélectionnée.');
-  markShipDirty();
+  const currentPiece = selected ? getCatalogPieceById(selected.catalogPieceId) : null;
+  applyVariantToAssemblyInstance({
+    instance: selected,
+    currentPiece,
+    nextPiece,
+    buildGeometry,
+    getReservationBoxForCatalogPiece,
+    collidesWithOthers,
+    createAssemblyEdgeGeometry,
+    createAnchorGroup,
+    disposeAnchorGroup,
+    setSelectedCatalogPieceId: (nextPieceId) => {
+      state.selectedCatalogPieceId = nextPieceId;
+    },
+    refreshAfterApply: () => {
+      refreshInstanceList();
+      renderCatalogPieceOptions();
+      updateStats();
+      updateSelectionBox();
+    },
+    setMessage,
+    markShipDirty,
+  });
 }
 
 function getFilteredCatalogPieces(pieces) {
@@ -3349,23 +3230,19 @@ function syncAssemblyPaletteToSelectedInstance() {
 }
 
 function getShapePalettePieces(pieces) {
-  const selectedPiece = getSceneSelectedCatalogPiece();
-  if (!selectedPiece) return [];
-  return pieces.filter((piece) => (
-    piece.family_id === selectedPiece.family_id
-    && piece.size_id === selectedPiece.size_id
-    && getPieceProfileType(piece) === 'standard'
-  ));
+  return getAssemblyShapePalettePieces({
+    pieces,
+    selectedPiece: getSceneSelectedCatalogPiece(),
+    getPieceProfileType,
+  });
 }
 
 function getShapePaletteVariantMap(pieces) {
-  const variantMap = new Map();
-  for (const piece of pieces) {
-    const variantIndex = Number(getShapeVariant(piece.shape_variant_id)?.variant_index);
-    if (!Number.isInteger(variantIndex) || variantIndex < 1 || variantIndex > SHAPE_BUTTON_COUNT) continue;
-    if (!variantMap.has(variantIndex)) variantMap.set(variantIndex, piece);
-  }
-  return variantMap;
+  return getAssemblyShapePaletteVariantMap({
+    pieces,
+    getShapeVariant,
+    shapeButtonCount: SHAPE_BUTTON_COUNT,
+  });
 }
 
 function getPieceProfileType(piece) {

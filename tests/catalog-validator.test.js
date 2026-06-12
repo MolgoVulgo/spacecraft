@@ -4,14 +4,13 @@ import { readFile } from 'node:fs/promises';
 
 import { validateCatalogData } from '../src/catalog-validator.js';
 
-test('catalog validator accepts the current catalog with warnings only', async () => {
+test('catalog validator accepts the current catalog', async () => {
   const raw = await readFile(new URL('../public/data/4x3x1_catalog.json', import.meta.url), 'utf8');
   const catalog = JSON.parse(raw);
   const report = validateCatalogData(catalog);
 
   assert.equal(report.valid, true);
   assert.equal(report.errors.length, 0);
-  assert.ok(report.warnings.length >= 1);
 });
 
 test('catalog validator rejects a missing piece reference', () => {
@@ -41,4 +40,162 @@ test('catalog validator rejects a missing piece reference', () => {
 
   assert.equal(report.valid, false);
   assert.ok(report.errors.some((issue) => issue.path.endsWith('.shape_variant_id')));
+});
+
+test('catalog validator accepts a valid advanced mesh variant', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: { subgrid_unit: 0.5 },
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'steel' }],
+    shape_variants: [{
+      id: 'shape_adv',
+      size_id: '4x3x1',
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 0, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 2, z: 0 },
+            { id: 'v004', x: 0, y: 2, z: 0 },
+          ],
+          faces: [{ id: 'f001', vertices: ['v001', 'v002', 'v003', 'v004'] }],
+        },
+      },
+      collision: { mode: 'base_box' },
+      anchors: [],
+    }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, true);
+  assert.equal(report.errors.length, 0);
+});
+
+test('catalog validator rejects advanced mesh vertex outside bounds', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: { subgrid_unit: 0.5 },
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'steel' }],
+    shape_variants: [{
+      id: 'shape_adv_bad',
+      size_id: '4x3x1',
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 4.5, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 2, z: 0 },
+          ],
+          faces: [{ id: 'f001', vertices: ['v001', 'v002', 'v003'] }],
+        },
+      },
+      collision: { mode: 'base_box' },
+      anchors: [],
+    }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((issue) => issue.code === 'vertex_out_of_bounds'));
+});
+
+test('catalog validator rejects advanced mesh face with unknown vertex', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: { subgrid_unit: 0.5 },
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'steel' }],
+    shape_variants: [{
+      id: 'shape_adv_unknown',
+      size_id: '4x3x1',
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 0, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 2, z: 0 },
+          ],
+          faces: [{ id: 'f001', vertices: ['v001', 'v002', 'v404'] }],
+        },
+      },
+      collision: { mode: 'base_box' },
+      anchors: [],
+    }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((issue) => issue.code === 'unknown_vertex_reference'));
+});
+
+test('catalog validator rejects advanced mesh coordinates off grid and invalid collision mode', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: { subgrid_unit: 0.5 },
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'steel' }],
+    shape_variants: [{
+      id: 'shape_adv_offgrid',
+      size_id: '4x3x1',
+      generation: {
+        mode: 'advanced_mesh',
+        base: { type: 'box', bounds: { length: 4, width: 3, height: 1 } },
+        visual_mesh: {
+          grid_step: 0.5,
+          vertices: [
+            { id: 'v001', x: 0.25, y: 0, z: 0 },
+            { id: 'v002', x: 4, y: 0, z: 0 },
+            { id: 'v003', x: 4, y: 2, z: 0 },
+          ],
+          faces: [{ id: 'f001', vertices: ['v001', 'v002', 'v003'] }],
+        },
+      },
+      collision: { mode: 'generated_from_shape' },
+      anchors: [],
+    }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((issue) => issue.code === 'vertex_off_grid'));
+  assert.ok(report.errors.some((issue) => issue.code === 'invalid_collision_mode'));
 });

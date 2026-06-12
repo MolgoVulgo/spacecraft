@@ -41,15 +41,61 @@
         <section class="editor-viewport-wrap">
           <canvas id="editorViewer"></canvas>
           <div id="selectedBaseSummary" class="summary-box selected-summary editor-summary-overlay"></div>
-        </section>
-
-        <section class="editor-workbench">
-          <div class="editor-tabs">
-            <button class="tab-button active" type="button" data-tab="shapeTab">Forme</button>
-            <button class="tab-button" type="button" data-tab="anchorsTab">Ancres</button>
-            <button class="tab-button" type="button" data-tab="validationTab">Validation</button>
-          </div>
-
+          <section id="editorAdvancedModePanel" class="control-block editor-advanced-mode-panel">
+            <button id="editorModeToggleBtn" class="editor-mode-toggle" type="button">Mode normal</button>
+            <div class="editor-overlay-tabs">
+              <button class="tab-button active" type="button" data-tab="shapeTab">Forme</button>
+              <button class="tab-button" type="button" data-tab="anchorsTab">Ancres</button>
+              <button class="tab-button" type="button" data-tab="validationTab">Validation</button>
+            </div>
+            <div id="editorAdvancedControls" hidden>
+              <div id="editorAdvancedModeSummary" class="summary-box">Aucune variante sélectionnée.</div>
+            <div class="editor-advanced-visibility-bar">
+              <span>Affichage</span>
+              <label class="inline-check" for="advancedPieceDisplayPieceInput">
+                <input id="advancedPieceDisplayPieceInput" type="radio" name="advancedPieceDisplayMode" value="piece" checked />
+                <span>Pièce</span>
+              </label>
+              <label class="inline-check" for="advancedPieceDisplayPointsInput">
+                <input id="advancedPieceDisplayPointsInput" type="radio" name="advancedPieceDisplayMode" value="points" />
+                <span>Points</span>
+              </label>
+            </div>
+            <label class="sub-label">Faces draft</label>
+            <select id="advancedDraftFaceListSelect" size="4"></select>
+            <div class="editor-advanced-operation-bar">
+              <span>Opération</span>
+              <label class="inline-check" for="advancedDraftOperationCustomFaceInput">
+                <input id="advancedDraftOperationCustomFaceInput" type="radio" name="advancedDraftOperationType" value="custom_face" checked />
+                <span>Face</span>
+              </label>
+              <label class="inline-check" for="advancedDraftOperationCutInput">
+                <input id="advancedDraftOperationCutInput" type="radio" name="advancedDraftOperationType" value="cut" />
+                <span>Coupe</span>
+              </label>
+            </div>
+            <div class="editor-advanced-operation-bar">
+              <span>Côté gardé</span>
+              <label class="inline-check" for="advancedCutKeepNormalInput">
+                <input id="advancedCutKeepNormalInput" type="radio" name="advancedCutKeepSide" value="normal" checked />
+                <span>Côté A</span>
+              </label>
+              <label class="inline-check" for="advancedCutKeepInverseInput">
+                <input id="advancedCutKeepInverseInput" type="radio" name="advancedCutKeepSide" value="inverse" />
+                <span>Côté B</span>
+              </label>
+            </div>
+            <div class="button-grid compact">
+              <button id="commitAdvancedDraftFaceBtn" type="button" class="primary">Créer opération depuis face</button>
+              <button id="deleteAdvancedDraftFaceBtn" type="button">Supprimer face draft</button>
+            </div>
+            <label class="sub-label">Opérations avancées</label>
+            <select id="advancedCustomFaceOperationListSelect" size="4"></select>
+            <div class="button-grid compact">
+              <button id="deleteAdvancedCustomFaceOperationBtn" type="button">Supprimer opération</button>
+            </div>
+            <div class="editor-note">Mode `Points` masque la coque. `Face` ajoute un plan visible. `Coupe` tronque le volume selon le plan de la face. `Côté A/B` choisit la moitié conservée.</div>
+            </div>
           <div id="shapeTab" class="tab-panel active">
             <section class="control-block editor-form">
               <label>Identité variante</label>
@@ -68,6 +114,48 @@
                   <option value="unknown">unknown</option>
                 </select>
               </div>
+            </section>
+
+            <section class="control-block editor-form advanced-mesh-panel">
+              <label>Mode géométrie</label>
+              <div class="form-grid">
+                <span>Mode</span>
+                <select id="variantGeometryModeSelect">
+                  <option value="simple">Simple</option>
+                  <option value="advanced_mesh">Advanced mesh</option>
+                </select>
+                <span>Grid step</span>
+                <input id="advancedMeshGridStepInput" type="number" min="0.1" step="0.1" value="0.5" />
+              </div>
+              <div id="advancedMeshSummary" class="summary-box">Aucune variante sélectionnée.</div>
+              <label class="sub-label">Vertices</label>
+              <div class="form-grid advanced-vertex-grid">
+                <span>X</span>
+                <input id="advancedVertexXInput" type="number" step="0.5" value="0" />
+                <span>Y</span>
+                <input id="advancedVertexYInput" type="number" step="0.5" value="0" />
+                <span>Z</span>
+                <input id="advancedVertexZInput" type="number" step="0.5" value="0" />
+              </div>
+              <div class="button-grid compact">
+                <button id="addAdvancedVertexBtn" type="button" class="primary">Ajouter vertex</button>
+                <button id="updateAdvancedVertexBtn" type="button">Mettre à jour vertex</button>
+                <button id="deleteAdvancedVertexBtn" type="button">Supprimer vertex</button>
+              </div>
+              <select id="advancedVertexListSelect" size="7"></select>
+              <label class="sub-label">Faces</label>
+              <div id="advancedFaceDraftSummary" class="summary-box">Brouillon face vide.</div>
+              <div class="button-grid compact">
+                <button id="addVertexToFaceDraftBtn" type="button" class="primary">Ajouter vertex au brouillon</button>
+                <button id="clearFaceDraftBtn" type="button">Vider brouillon</button>
+                <button id="createAdvancedFaceBtn" type="button">Créer face</button>
+              </div>
+              <select id="advancedFaceListSelect" size="6"></select>
+              <div class="button-grid compact">
+                <button id="deleteAdvancedFaceBtn" type="button">Supprimer face</button>
+                <button id="cancelAdvancedMeshChangesBtn" type="button">Annuler changements</button>
+              </div>
+              <div class="editor-note">Mode avancé: `baseBox` fixe pour collision/snap, mesh visuel édité par vertices/faces, ancres logiques inchangées.</div>
             </section>
 
             <section id="variantFaceEditorCard" class="control-block editor-form variant-face-panel">

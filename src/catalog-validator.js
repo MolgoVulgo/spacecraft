@@ -1,3 +1,5 @@
+import { validateAdvancedMeshDefinition } from './advanced-mesh.js';
+
 function createIssue(level, path, message, code) {
   return { level, path, message, code };
 }
@@ -95,6 +97,7 @@ export function validateCatalogData(catalog) {
 
   for (const [index, shape] of (catalog.shape_variants ?? []).entries()) {
     const path = `shape_variants[${index}]`;
+    const size = (catalog.sizes ?? []).find((item) => item.id === shape?.size_id) ?? null;
     if (!idSets.sizes?.has(shape?.size_id)) {
       reporter.error(`${path}.size_id`, `size_id introuvable (${shape?.size_id ?? 'absent'}).`, 'missing_reference');
     }
@@ -102,6 +105,22 @@ export function validateCatalogData(catalog) {
       reporter.error(`${path}.generation.mode`, 'generation.mode absent.', 'missing_field');
     } else if (shape.generation.mode === 'legacy_mesh') {
       reporter.warn(`${path}.generation.mode`, 'legacy_mesh encore présent.', 'legacy_generation');
+    } else if (shape.generation.mode === 'advanced_mesh') {
+      const collisionMode = shape?.collision?.mode;
+      if (collisionMode == null) {
+        reporter.warn(`${path}.collision.mode`, 'collision.mode absent, base_box attendu.', 'missing_collision_mode');
+      }
+      const report = validateAdvancedMeshDefinition({
+        shape,
+        size,
+        collisionMode: collisionMode ?? 'base_box',
+      });
+      for (const issue of report.errors) {
+        reporter.error(`${path}.${issue.path}`, issue.message, issue.code);
+      }
+      for (const issue of report.warnings) {
+        reporter.warn(`${path}.${issue.path}`, issue.message, issue.code);
+      }
     }
     for (const [anchorIndex, anchor] of (shape?.anchors ?? []).entries()) {
       if (!hasOwnObject(anchor?.position) || !hasOwnObject(anchor?.normal)) {

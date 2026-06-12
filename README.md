@@ -49,6 +49,7 @@ npm run test:python:legacy
 ```txt
 editor.html
 → créer / modifier variantes, ancres, specs, recettes
+→ optionnel: mode avancé points / lignes / faces / coupe
 → contrôler / valider
 → Publier vers Assembly
 → recharger index.html
@@ -130,4 +131,8 @@ Docs de référence :
 ```txt
 docs/CURRENT_ARCHITECTURE.md
 docs/DRIFT_CONTROL.md
+docs/architecture/3d-engines.md
+docs/editor/simple-mode.md
+docs/editor/advanced-mode.md
+docs/catalog/schema.md
 ```
