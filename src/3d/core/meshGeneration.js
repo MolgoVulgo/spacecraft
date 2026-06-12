@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { validateAdvancedMeshDefinition } from '../../advanced-mesh.js';
 
 export function buildShapeGeometry({ shape, size, scale = 100, symmetry = {}, showVoxels = false, renderMode = null } = {}) {
   const dimensions = size?.dimensions ?? shape?.generation?.base?.bounds ?? { length: 4, width: 3, height: 1 };
@@ -12,8 +11,6 @@ export function buildShapeGeometry({ shape, size, scale = 100, symmetry = {}, sh
 
   if (mode === 'parametric_shape' && ['point_1', 'point_2', 'point_3'].includes(baseType)) {
     geometry = geometryFromIndexedMesh(...getParametricPrismMesh(dimensions, baseType, scale, shape?.generation?.base));
-  } else if (mode === 'advanced_mesh') {
-    geometry = buildAdvancedMeshGeometry(shape, dimensions, scale);
   } else if (mode === 'primitive_stack') {
     if (baseType === 'wedge') geometry = geometryFromIndexedMesh(...getWedgeMesh(dimensions, scale, shape?.generation?.base));
     else geometry = geometryFromIndexedMesh(...getBoxMesh(dimensions, scale));
@@ -31,36 +28,6 @@ export function buildShapeGeometry({ shape, size, scale = 100, symmetry = {}, sh
 
   if (!geometry) geometry = geometryFromIndexedMesh(...getBoxMesh(dimensions, scale));
   return applySymmetryToGeometry(geometry, symmetry);
-}
-
-function buildAdvancedMeshGeometry(shape, dimensions, scale) {
-  const visualMesh = shape?.generation?.visual_mesh;
-  const report = validateAdvancedMeshDefinition({
-    shape,
-    size: { dimensions },
-    visualMesh,
-    collisionMode: shape?.collision?.mode ?? 'base_box',
-  });
-  if (!report.valid || !Array.isArray(visualMesh?.faces) || visualMesh.faces.length === 0) {
-    return null;
-  }
-
-  const vertices = (visualMesh.vertices ?? []).map((vertex) => (
-    catalogPoint(vertex.x, vertex.y, vertex.z, dimensions, scale)
-  ));
-  const vertexIndexById = new Map((visualMesh.vertices ?? []).map((vertex, index) => [vertex.id, index]));
-  const faces = [];
-
-  for (const face of visualMesh.faces ?? []) {
-    const indices = face.vertices.map((vertexId) => vertexIndexById.get(vertexId)).filter((index) => Number.isInteger(index));
-    if (indices.length < 3) continue;
-    for (let index = 1; index < indices.length - 1; index += 1) {
-      faces.push([indices[0], indices[index], indices[index + 1]]);
-    }
-  }
-
-  if (!faces.length) return null;
-  return geometryFromIndexedMesh(vertices, faces);
 }
 
 export function applySymmetryToGeometry(geometry, symmetry = {}) {

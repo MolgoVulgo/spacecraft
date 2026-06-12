@@ -1,5 +1,3 @@
-import { validateAdvancedMeshDefinition } from './advanced-mesh.js';
-
 function createIssue(level, path, message, code) {
   return { level, path, message, code };
 }
@@ -106,21 +104,7 @@ export function validateCatalogData(catalog) {
     } else if (shape.generation.mode === 'legacy_mesh') {
       reporter.warn(`${path}.generation.mode`, 'legacy_mesh encore présent.', 'legacy_generation');
     } else if (shape.generation.mode === 'advanced_mesh') {
-      const collisionMode = shape?.collision?.mode;
-      if (collisionMode == null) {
-        reporter.warn(`${path}.collision.mode`, 'collision.mode absent, base_box attendu.', 'missing_collision_mode');
-      }
-      const report = validateAdvancedMeshDefinition({
-        shape,
-        size,
-        collisionMode: collisionMode ?? 'base_box',
-      });
-      for (const issue of report.errors) {
-        reporter.error(`${path}.${issue.path}`, issue.message, issue.code);
-      }
-      for (const issue of report.warnings) {
-        reporter.warn(`${path}.${issue.path}`, issue.message, issue.code);
-      }
+      reporter.error(`${path}.generation.mode`, 'advanced_mesh est obsolète; utiliser voxel_grid / parametric_shape avec generation.operations[].', 'obsolete_generation');
     }
     for (const [anchorIndex, anchor] of (shape?.anchors ?? []).entries()) {
       if (!hasOwnObject(anchor?.position) || !hasOwnObject(anchor?.normal)) {

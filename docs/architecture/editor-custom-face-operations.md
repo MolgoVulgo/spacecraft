@@ -80,4 +80,4 @@ Rendering rule:
 Scope limits for this phase:
 
 - no collision rewrite;
-- no automatic compilation to `advanced_mesh` yet.
+- no legacy `advanced_mesh` export path.

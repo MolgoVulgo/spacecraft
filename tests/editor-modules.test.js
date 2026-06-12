@@ -89,19 +89,16 @@ test('editor simple mode preview state keeps visible cells and mesh rules', () =
   const shape = {
     generation: {
       operations: [{ type: 'round' }],
-      visual_mesh: { faces: [{ id: 'f1' }] },
     },
   };
   const size = { dimensions: { length: 4, width: 3, height: 1 } };
   const state = deriveEditorPreviewState({
     shape,
     size,
-    advanced: false,
     fullCells: () => [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }],
     getShapeCells: () => [{ x: 0, y: 0, z: 0, enabled: true }, { x: 1, y: 0, z: 0, enabled: true }],
     getSuppressedCellKeysForOperations: () => new Set(['1:0:0']),
     cellKey: (x, y, z) => `${x}:${y}:${z}`,
-    getAdvancedMeshValidation: () => ({ valid: true }),
   });
 
   assert.equal(state.shouldRenderMesh, true);

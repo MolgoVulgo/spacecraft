@@ -55,17 +55,6 @@ import {
   shapeBelongsToEditorBase,
 } from './3d/editor/variantSelection.js';
 import { compileEditorCatalog } from './3d/editor/editorShapeCompiler.js';
-import {
-  ADVANCED_MESH_DEFAULT_GRID_STEP,
-  addAdvancedMeshVertex,
-  createAdvancedMeshFace,
-  deleteAdvancedMeshFace,
-  deleteAdvancedMeshVertex,
-  ensureAdvancedMeshGeneration,
-  getAdvancedMeshGridStep,
-  updateAdvancedMeshVertex,
-  validateAdvancedMeshDefinition,
-} from './advanced-mesh.js';
 import { createNavigationCubeOverlay } from './navigation-cube-overlay.js';
 import { NAVIGATION_CUBE_VIEW_IDS, createNavigationCubeViewApi } from './navigation-cube.js';
 import { resolveRuntimePath } from './runtime-paths.js';
@@ -90,6 +79,7 @@ const EDITOR_USER_PREFERENCES_STORAGE_KEY = 'spacecraft.editor_user_preferences.
 const DEFAULT_EDITOR_USER_PREFERENCES = {
   showDeleteButtons: false,
 };
+const EDITOR_SUBGRID_DEFAULT_STEP = 0.5;
 const ADVANCED_PIECE_DISPLAY_MODES = {
   PIECE: 'piece',
   POINTS: 'points',
@@ -105,8 +95,6 @@ const state = {
   selectedAnchorId: null,
   selectedFace: null,
   selectedOperationIndex: null,
-  selectedAdvancedVertexId: null,
-  selectedAdvancedFaceId: null,
   selectedAdvancedPointIds: [],
   selectedAdvancedEdgeIds: [],
   selectedAdvancedDraftFaceId: null,
@@ -115,7 +103,6 @@ const state = {
   advancedCutKeepSide: 'normal',
   advancedDraftEdgesByShapeId: {},
   advancedDraftFacesByShapeId: {},
-  advancedFaceDraftVertexIds: [],
   advancedPieceDisplayMode: ADVANCED_PIECE_DISPLAY_MODES.PIECE,
   message: '',
   activeViewId: NAVIGATION_CUBE_VIEW_IDS.home,
@@ -172,23 +159,6 @@ const dom = {
   shapeLabelInput: document.querySelector('#shapeLabelInput'),
   shapeFamilyInput: document.querySelector('#shapeFamilyInput'),
   shapeStatusSelect: document.querySelector('#shapeStatusSelect'),
-  variantGeometryModeSelect: document.querySelector('#variantGeometryModeSelect'),
-  advancedMeshSummary: document.querySelector('#advancedMeshSummary'),
-  advancedMeshGridStepInput: document.querySelector('#advancedMeshGridStepInput'),
-  advancedVertexXInput: document.querySelector('#advancedVertexXInput'),
-  advancedVertexYInput: document.querySelector('#advancedVertexYInput'),
-  advancedVertexZInput: document.querySelector('#advancedVertexZInput'),
-  addAdvancedVertexBtn: document.querySelector('#addAdvancedVertexBtn'),
-  updateAdvancedVertexBtn: document.querySelector('#updateAdvancedVertexBtn'),
-  deleteAdvancedVertexBtn: document.querySelector('#deleteAdvancedVertexBtn'),
-  addVertexToFaceDraftBtn: document.querySelector('#addVertexToFaceDraftBtn'),
-  clearFaceDraftBtn: document.querySelector('#clearFaceDraftBtn'),
-  createAdvancedFaceBtn: document.querySelector('#createAdvancedFaceBtn'),
-  deleteAdvancedFaceBtn: document.querySelector('#deleteAdvancedFaceBtn'),
-  cancelAdvancedMeshChangesBtn: document.querySelector('#cancelAdvancedMeshChangesBtn'),
-  advancedVertexListSelect: document.querySelector('#advancedVertexListSelect'),
-  advancedFaceListSelect: document.querySelector('#advancedFaceListSelect'),
-  advancedFaceDraftSummary: document.querySelector('#advancedFaceDraftSummary'),
   cellXInput: document.querySelector('#cellXInput'),
   cellYInput: document.querySelector('#cellYInput'),
   cellZInput: document.querySelector('#cellZInput'),
@@ -460,23 +430,14 @@ function fillEditorUserConfigForm(preferences = state.editorUserPreferences) {
 function applyEditorUserPreferences(preferences = state.editorUserPreferences) {
   const showDeleteButtons = Boolean(preferences?.showDeleteButtons);
   document.body.dataset.editorShowDeleteButtons = showDeleteButtons ? 'true' : 'false';
-  const deleteControls = document.querySelectorAll([
-    '#deleteVariantBtn',
-    '#deleteCatalogPieceBtn',
-    '#removeCellBtn',
-    '#clearCellsBtn',
-    '#deleteFaceOperationBtn',
-    '#deleteAnchorBtn',
-    '.editor-delete-action',
-    '.editor-delete-button',
-    '.editor-variant-delete-btn',
-    '.delete-reference-btn',
-    '.base-model-delete-btn',
-    '[data-editor-delete-action]',
-    '[data-delete-action]',
+  const protectedControls = document.querySelectorAll([
+    '.catalog-tree-size-delete-btn',
+    '.catalog-tree-variant-delete-btn',
+    '.editor-variant-primary-edit-btn',
   ].join(','));
-  for (const control of deleteControls) {
+  for (const control of protectedControls) {
     control.hidden = !showDeleteButtons;
+    control.style.display = showDeleteButtons ? '' : 'none';
     control.setAttribute('aria-hidden', String(!showDeleteButtons));
     control.tabIndex = showDeleteButtons ? 0 : -1;
   }
@@ -551,7 +512,6 @@ scene.add(root);
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const cellPickTargets = [];
-const advancedVertexPickTargets = [];
 const advancedPointPickTargets = [];
 const advancedEdgePickTargets = [];
 const shapeSnapshots = new Map();
@@ -627,25 +587,45 @@ function getRecipe(id) { return state.repo?.recipes.get(id) ?? null; }
 function getPiece(id) { return state.repo?.pieces.get(id) ?? null; }
 function selectedShape() { return getShape(state.selectedShapeId); }
 function selectedPiece() { return getPiece(state.selectedCatalogPieceId); }
-function isAdvancedMeshShape(shape = selectedShape()) { return shape?.generation?.mode === 'advanced_mesh'; }
+
+function normalizeVariantStatus(status) {
+  return status === 'validated' ? 'validated' : 'draft';
+}
+
+function isProtectedStandardVariantShape(shape = selectedShape()) {
+  const index = Number(shape?.variant_index);
+  return index === 0 || index === 1;
+}
+
+function isPrimaryVariantShape(shape = selectedShape()) {
+  return isProtectedStandardVariantShape(shape);
+}
+
+function isVariantEditingLocked(shape = selectedShape()) {
+  if (!shape) return false;
+  if (isProtectedStandardVariantShape(shape) && shape?.metadata?.editor_variant_locked === undefined) return true;
+  return Boolean(shape?.metadata?.editor_variant_locked);
+}
+
+function setVariantEditingLocked(shape, locked) {
+  if (!shape) return;
+  shape.metadata ??= {};
+  shape.metadata.editor_variant_locked = Boolean(locked);
+  shape.metadata.updated_at = new Date().toISOString();
+}
+
+function ensureVariantEditable(actionLabel = 'Modification refusée') {
+  const shape = selectedShape();
+  if (!shape) return false;
+  if (!isVariantEditingLocked(shape)) return true;
+  setMessage(`${actionLabel} : variante verrouillée.`);
+  return false;
+}
 
 function storeShapeSnapshot(shapeId = state.selectedShapeId) {
   const shape = getShape(shapeId);
   if (!shape) return;
   shapeSnapshots.set(shapeId, structuredClone(shape));
-}
-
-function restoreSelectedShapeSnapshot() {
-  const shape = selectedShape();
-  const snapshot = shapeSnapshots.get(shape?.id);
-  if (!shape || !snapshot) return false;
-  Object.keys(shape).forEach((key) => { delete shape[key]; });
-  Object.assign(shape, structuredClone(snapshot));
-  state.selectedAdvancedVertexId = null;
-  state.selectedAdvancedFaceId = null;
-  state.advancedFaceDraftVertexIds = [];
-  state.selectedFace = null;
-  return true;
 }
 
 function slugifyId(value) {
@@ -719,19 +699,20 @@ function renderBaseModels() {
   const groups = getBaseGroups();
   for (const group of groups) {
     const familyDetails = document.createElement('details');
-    familyDetails.className = 'tree-family';
+    familyDetails.className = 'tree-family catalog-tree-family';
     familyDetails.open = state.selectedBase?.family_id === group.family_id || group === groups[0];
 
     const familySummary = document.createElement('summary');
-    familySummary.className = 'tree-family-summary';
+    familySummary.className = 'tree-family-summary catalog-tree-family-summary';
     const familyTitle = document.createElement('span');
-    familyTitle.className = 'tree-family-title';
+    familyTitle.className = 'tree-family-title catalog-tree-family-title';
     familyTitle.textContent = group.label_fr;
     const addBaseBtn = document.createElement('button');
     addBaseBtn.type = 'button';
-    addBaseBtn.className = 'tree-family-add-action';
+    addBaseBtn.className = 'tree-family-add-action catalog-tree-action catalog-tree-family-add-btn';
     addBaseBtn.textContent = '[+]';
     addBaseBtn.title = `Créer une référence dans ${group.label_fr}`;
+    addBaseBtn.dataset.treeAction = 'create-size-reference';
     addBaseBtn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -743,27 +724,33 @@ function renderBaseModels() {
     for (const sizeId of group.sizes) {
       const isBaseActive = state.selectedBase?.family_id === group.family_id && state.selectedBase?.size_id === sizeId;
       const sizeDetails = document.createElement('details');
-      sizeDetails.className = 'tree-size';
+      sizeDetails.className = 'tree-size catalog-tree-size';
       sizeDetails.open = isBaseActive;
 
       const sizeSummary = document.createElement('summary');
-      sizeSummary.className = isBaseActive ? 'active' : '';
+      sizeSummary.className = `catalog-tree-size-summary${isBaseActive ? ' active' : ''}`;
 
       const selectBtn = document.createElement('button');
       selectBtn.type = 'button';
-      selectBtn.className = 'tree-node-button';
+      selectBtn.className = 'tree-node-button catalog-tree-size-select-btn';
       selectBtn.textContent = `${group.piece_label_fr} ${sizeId}`;
+      selectBtn.dataset.treeAction = 'select-size';
       selectBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
         selectBaseModel(group, sizeId);
       });
 
+      const sizeActionGroup = document.createElement('div');
+      sizeActionGroup.className = 'catalog-tree-size-actions';
+
       const specBtn = document.createElement('button');
       specBtn.type = 'button';
-      specBtn.className = 'tree-mini-action';
+      specBtn.className = 'tree-mini-action tree-mini-icon-action catalog-tree-action catalog-tree-size-spec-btn';
       specBtn.title = 'Ouvrir les specs du modèle';
-      specBtn.textContent = '+ spec';
+      specBtn.setAttribute('aria-label', 'Ouvrir les specs du modèle');
+      specBtn.innerHTML = '<i class="ri-article-line" aria-hidden="true"></i>';
+      specBtn.dataset.treeAction = 'open-size-specs';
       specBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -773,9 +760,11 @@ function renderBaseModels() {
 
       const recipeBtn = document.createElement('button');
       recipeBtn.type = 'button';
-      recipeBtn.className = 'tree-mini-action';
+      recipeBtn.className = 'tree-mini-action tree-mini-icon-action catalog-tree-action catalog-tree-size-recipe-btn';
       recipeBtn.title = 'Ouvrir la recette du modèle';
-      recipeBtn.textContent = '+ recette';
+      recipeBtn.setAttribute('aria-label', 'Ouvrir la recette du modèle');
+      recipeBtn.innerHTML = '<i class="ri-survey-line" aria-hidden="true"></i>';
+      recipeBtn.dataset.treeAction = 'open-size-recipes';
       recipeBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -785,9 +774,11 @@ function renderBaseModels() {
 
       const createVariantBtn = document.createElement('button');
       createVariantBtn.type = 'button';
-      createVariantBtn.className = 'tree-mini-action';
+      createVariantBtn.className = 'tree-mini-action tree-mini-icon-action catalog-tree-action catalog-tree-size-create-variant-btn';
       createVariantBtn.title = 'Créer une variante';
-      createVariantBtn.textContent = '+ variant';
+      createVariantBtn.setAttribute('aria-label', 'Créer une variante');
+      createVariantBtn.innerHTML = '<i class="ri-timeline-view" aria-hidden="true"></i>';
+      createVariantBtn.dataset.treeAction = 'create-variant';
       createVariantBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -796,30 +787,60 @@ function renderBaseModels() {
 
       const deleteRootBtn = document.createElement('button');
       deleteRootBtn.type = 'button';
-      deleteRootBtn.className = 'tree-mini-action danger editor-delete-button editor-root-delete-btn';
-      deleteRootBtn.textContent = 'Suppr';
+      deleteRootBtn.className = 'tree-mini-action tree-mini-icon-action danger editor-delete-button editor-root-delete-btn catalog-tree-action catalog-tree-size-delete-btn';
       deleteRootBtn.title = `Supprimer l'entrée catalogue ${group.piece_label_fr} ${sizeId}`;
+      deleteRootBtn.setAttribute('aria-label', `Supprimer l'entrée catalogue ${group.piece_label_fr} ${sizeId}`);
+      deleteRootBtn.innerHTML = '<i class="ri-delete-bin-line" aria-hidden="true"></i>';
       deleteRootBtn.dataset.editorDeleteAction = 'delete-root-piece';
+      deleteRootBtn.dataset.treeAction = 'delete-size-reference';
       deleteRootBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
         deleteBaseReferenceByFamilyAndSize(group.family_id, sizeId);
       });
 
-      sizeSummary.append(selectBtn, specBtn, recipeBtn, createVariantBtn, deleteRootBtn);
+      sizeActionGroup.append(specBtn, recipeBtn, createVariantBtn, deleteRootBtn);
+      sizeSummary.append(selectBtn, sizeActionGroup);
       sizeDetails.append(sizeSummary);
 
       const variants = document.createElement('div');
-      variants.className = 'tree-variants';
+      variants.className = 'tree-variants catalog-tree-variants';
       for (const shape of findShapesForBase(group.family_id, sizeId)) {
         const variantRow = document.createElement('div');
-        variantRow.className = 'tree-variant-row';
+        variantRow.className = 'tree-variant-row catalog-tree-variant-row';
+        const variantLocked = isVariantEditingLocked(shape);
+        const isProtectedStandardVariant = isProtectedStandardVariantShape(shape);
+
+        const variantActionGroup = document.createElement('div');
+        variantActionGroup.className = 'catalog-tree-variant-actions';
+
+        const variantLockBtn = document.createElement('button');
+        variantLockBtn.type = 'button';
+        variantLockBtn.className = `tree-mini-action tree-mini-icon-action tree-variant-lock-btn catalog-tree-action catalog-tree-variant-lock-btn${variantLocked ? ' is-locked' : ''}${isProtectedStandardVariant ? ' editor-variant-primary-edit-btn' : ''}`;
+        variantLockBtn.title = variantLocked
+          ? (isProtectedStandardVariant
+            ? 'Variante de base verrouillée par défaut : overlay masqué, édition désactivée'
+            : 'Variante verrouillée : édition désactivée')
+          : 'Variante modifiable : édition autorisée';
+        variantLockBtn.setAttribute('aria-label', variantLocked ? 'Variante verrouillée' : 'Variante modifiable');
+        variantLockBtn.innerHTML = variantLocked
+          ? '<i class="ri-file-lock-line" aria-hidden="true"></i>'
+          : '<i class="ri-file-line" aria-hidden="true"></i>';
+        variantLockBtn.dataset.treeAction = 'toggle-variant-lock';
+        variantLockBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setVariantEditingLocked(shape, !variantLocked);
+          if (state.selectedShapeId === shape.id) renderAll(false);
+          else renderBaseModels();
+        });
 
         const variant = document.createElement('button');
         variant.type = 'button';
-        variant.className = 'tree-variant-button';
+        variant.className = 'tree-variant-button catalog-tree-variant-select-btn';
         if (isBaseActive && shape.id === state.selectedShapeId) variant.classList.add('active');
         variant.textContent = `↳ ${shape.label ?? shape.id}`;
+        variant.dataset.treeAction = 'select-variant';
         variant.addEventListener('click', () => {
           selectBaseModel(group, sizeId, { keepView: true });
           state.selectedShapeId = shape.id;
@@ -833,17 +854,20 @@ function renderBaseModels() {
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
-        deleteBtn.className = 'tree-mini-action danger editor-delete-button editor-variant-delete-btn';
-        deleteBtn.textContent = 'Suppr';
+        deleteBtn.className = 'tree-mini-action tree-mini-icon-action danger editor-delete-button editor-variant-delete-btn catalog-tree-action catalog-tree-variant-delete-btn';
         deleteBtn.title = `Supprimer la variante ${shape.label ?? shape.id}`;
+        deleteBtn.setAttribute('aria-label', `Supprimer la variante ${shape.label ?? shape.id}`);
+        deleteBtn.innerHTML = '<i class="ri-delete-bin-line" aria-hidden="true"></i>';
         deleteBtn.dataset.editorDeleteAction = 'delete-variant';
+        deleteBtn.dataset.treeAction = 'delete-variant';
         deleteBtn.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
           deleteVariantById(shape.id);
         });
 
-        variantRow.append(variant, deleteBtn);
+        variantActionGroup.append(variantLockBtn, deleteBtn);
+        variantRow.append(variant, variantActionGroup);
         variants.append(variantRow);
       }
       sizeDetails.append(variants);
@@ -868,11 +892,8 @@ function selectBaseModel(group, sizeId, options = {}) {
   const shape = basePiece ? getShape(basePiece.shape_variant_id) : findShapesForBase(group.family_id, sizeId)[0];
   state.selectedShapeId = shape?.id ?? null;
   state.selectedFace = null;
-  state.selectedAdvancedVertexId = shape?.generation?.visual_mesh?.vertices?.[0]?.id ?? null;
-  state.selectedAdvancedFaceId = shape?.generation?.visual_mesh?.faces?.[0]?.id ?? null;
   resetAdvancedPointSelection();
   resetAdvancedEdgeSelection();
-  state.advancedFaceDraftVertexIds = [];
   if (shape?.id) storeShapeSnapshot(shape.id);
 
   renderAll();
@@ -949,6 +970,7 @@ function renderSelectedBaseSummary() {
     `modèle       : ${base.piece_label_fr} ${base.size_id}`,
     `family_id    : ${base.family_id}`,
     `shape        : ${shape?.id ?? 'aucune'}`,
+    `édition      : ${shape ? (isVariantEditingLocked(shape) ? 'verrouillée' : 'modifiable') : 'n/a'}`,
     `catalog      : ${piece?.id ?? 'aucune entrée liée'}`,
     `dimensions   : ${size?.dimensions ? `${size.dimensions.length}×${size.dimensions.width}×${size.dimensions.height}` : 'n/a'}`,
     `cellules     : ${cells.length}`,
@@ -1064,12 +1086,6 @@ function isParametricShape(shape) {
 
 function ensureVoxelGeneration(shape) {
   const size = getSize(shape.size_id);
-  if (shape?.generation?.mode === 'advanced_mesh') {
-    ensureAdvancedMeshGeneration(shape, size, {
-      grid_step: Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP,
-    });
-    return;
-  }
   if (isParametricShape(shape)) {
     shape.generation.cells = normalizeCells(shape.generation.cells?.length ? shape.generation.cells : fullCells(size), size);
     shape.generation.operations ??= [];
@@ -1197,6 +1213,7 @@ function cellKey(x, y, z) { return `${x}:${y}:${z}`; }
 function setCell(enabled) {
   const shape = selectedShape();
   if (!shape) return;
+  if (!ensureVariantEditable(enabled ? 'Ajout cellule refusé' : 'Suppression cellule refusée')) return;
   ensureVoxelGeneration(shape);
   const size = getSize(shape.size_id);
   const { x, y, z } = readCellInputValues();
@@ -1219,6 +1236,7 @@ function isCellInside(size, x, y, z) {
 function resetFullBox() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!ensureVariantEditable('Réinitialisation refusée')) return;
   ensureVoxelGeneration(shape);
   shape.generation.cells = fullCells(getSize(shape.size_id));
   markShapeDirty(shape, 'cells_reset_full_box');
@@ -1228,6 +1246,7 @@ function resetFullBox() {
 function clearCells() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!ensureVariantEditable('Vidage refusé')) return;
   ensureVoxelGeneration(shape);
   shape.generation.cells = [];
   markShapeDirty(shape, 'cells_cleared');
@@ -1288,177 +1307,6 @@ function createGenerationForVariantType(type, size) {
     cells: fullCells(size),
     operations: [],
   };
-}
-
-function getAdvancedMesh(shape = selectedShape()) {
-  return shape?.generation?.visual_mesh ?? null;
-}
-
-function getAdvancedMeshValidation(shape = selectedShape(), size = getSize(shape?.size_id)) {
-  if (!shape || !isAdvancedMeshShape(shape)) return { valid: true, errors: [], warnings: [], gridStep: ADVANCED_MESH_DEFAULT_GRID_STEP };
-  return validateAdvancedMeshDefinition({
-    shape,
-    size,
-    collisionMode: shape?.collision?.mode ?? 'base_box',
-  });
-}
-
-function syncAdvancedVertexInputs(vertexId = state.selectedAdvancedVertexId) {
-  const vertex = getAdvancedMesh()?.vertices?.find((item) => item.id === vertexId) ?? null;
-  if (!vertex) return;
-  if (dom.advancedVertexXInput) dom.advancedVertexXInput.value = vertex.x;
-  if (dom.advancedVertexYInput) dom.advancedVertexYInput.value = vertex.y;
-  if (dom.advancedVertexZInput) dom.advancedVertexZInput.value = vertex.z;
-}
-
-function switchShapeToAdvancedMesh() {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  if (!shape || !size) return false;
-  ensureAdvancedMeshGeneration(shape, size, {
-    seedDefault: true,
-    grid_step: Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP,
-  });
-  shape.metadata ??= {};
-  shape.metadata.variant_type = 'advanced_mesh';
-  state.selectedAdvancedVertexId = shape.generation.visual_mesh?.vertices?.[0]?.id ?? null;
-  state.selectedAdvancedFaceId = shape.generation.visual_mesh?.faces?.[0]?.id ?? null;
-  state.advancedFaceDraftVertexIds = [];
-  markShapeDirty(shape, 'advanced_mesh_enabled');
-  return true;
-}
-
-function switchShapeToSimpleMode() {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  if (!shape || !size) return false;
-  if (!globalThis.confirm('Revenir en mode simple remplace le visual mesh par une base voxel. Continuer ?')) return false;
-  shape.generation = createGenerationForVariantType('block', size);
-  shape.collision = { ...(shape.collision ?? {}), mode: 'generated_from_shape', precision: 'voxel_1x1x1', allow_overlap: false };
-  state.selectedAdvancedVertexId = null;
-  state.selectedAdvancedFaceId = null;
-  state.advancedFaceDraftVertexIds = [];
-  markShapeDirty(shape, 'advanced_mesh_disabled');
-  return true;
-}
-
-function updateVariantGeometryMode() {
-  if (!ensureSimpleEditorMode('Mode géométrie verrouillé')) {
-    renderEditorModeUi();
-    return;
-  }
-  const shape = selectedShape();
-  if (!shape) return;
-  const nextMode = dom.variantGeometryModeSelect?.value;
-  const changed = nextMode === 'advanced_mesh'
-    ? switchShapeToAdvancedMesh()
-    : switchShapeToSimpleMode();
-  if (!changed) {
-    if (dom.variantGeometryModeSelect) dom.variantGeometryModeSelect.value = isAdvancedMeshShape(shape) ? 'advanced_mesh' : 'simple';
-    return;
-  }
-  renderAll();
-}
-
-function readAdvancedVertexInputs() {
-  return {
-    x: Number(dom.advancedVertexXInput?.value),
-    y: Number(dom.advancedVertexYInput?.value),
-    z: Number(dom.advancedVertexZInput?.value),
-  };
-}
-
-function addOrUpdateAdvancedVertex(update = false) {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  if (!shape || !size || !isAdvancedMeshShape(shape)) return;
-  const result = update
-    ? updateAdvancedMeshVertex(shape, size, state.selectedAdvancedVertexId, readAdvancedVertexInputs(), {
-      gridStep: Number(dom.advancedMeshGridStepInput?.value) || ADVANCED_MESH_DEFAULT_GRID_STEP,
-    })
-    : addAdvancedMeshVertex(shape, size, readAdvancedVertexInputs(), {
-      gridStep: Number(dom.advancedMeshGridStepInput?.value) || ADVANCED_MESH_DEFAULT_GRID_STEP,
-    });
-  if (!result.ok) {
-    setMessage(result.error);
-    renderAll();
-    return;
-  }
-  state.selectedAdvancedVertexId = result.vertex?.id ?? state.selectedAdvancedVertexId;
-  markShapeDirty(shape, update ? 'advanced_vertex_updated' : 'advanced_vertex_added');
-  setMessage(update ? `Vertex mis à jour : ${state.selectedAdvancedVertexId}.` : `Vertex ajouté : ${state.selectedAdvancedVertexId}.`);
-  renderAll();
-}
-
-function removeAdvancedVertex() {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  if (!shape || !size || !isAdvancedMeshShape(shape) || !state.selectedAdvancedVertexId) return;
-  const removedVertexId = state.selectedAdvancedVertexId;
-  const result = deleteAdvancedMeshVertex(shape, size, removedVertexId);
-  if (!result.ok) {
-    setMessage(result.error);
-    renderAll();
-    return;
-  }
-  const nextVertex = getAdvancedMesh(shape)?.vertices?.[0]?.id ?? null;
-  state.selectedAdvancedVertexId = nextVertex;
-  state.advancedFaceDraftVertexIds = state.advancedFaceDraftVertexIds.filter((id) => id !== removedVertexId);
-  markShapeDirty(shape, 'advanced_vertex_deleted');
-  setMessage('Vertex supprimé.');
-  renderAll();
-}
-
-function appendSelectedVertexToFaceDraft() {
-  const vertexId = state.selectedAdvancedVertexId;
-  if (!vertexId) return;
-  if (!state.advancedFaceDraftVertexIds.includes(vertexId)) state.advancedFaceDraftVertexIds.push(vertexId);
-  renderAdvancedMeshEditor();
-}
-
-function clearAdvancedFaceDraft() {
-  state.advancedFaceDraftVertexIds = [];
-  renderAdvancedMeshEditor();
-}
-
-function addAdvancedFaceFromDraft() {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  if (!shape || !size || !isAdvancedMeshShape(shape)) return;
-  const result = createAdvancedMeshFace(shape, size, state.advancedFaceDraftVertexIds);
-  if (!result.ok) {
-    setMessage(result.error);
-    renderAll();
-    return;
-  }
-  state.selectedAdvancedFaceId = result.face.id;
-  state.advancedFaceDraftVertexIds = [];
-  markShapeDirty(shape, 'advanced_face_added');
-  setMessage(`Face ajoutée : ${result.face.id}.`);
-  renderAll();
-}
-
-function removeAdvancedFace() {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  if (!shape || !size || !isAdvancedMeshShape(shape) || !state.selectedAdvancedFaceId) return;
-  const result = deleteAdvancedMeshFace(shape, size, state.selectedAdvancedFaceId);
-  if (!result.ok) {
-    setMessage(result.error);
-    renderAll();
-    return;
-  }
-  state.selectedAdvancedFaceId = getAdvancedMesh(shape)?.faces?.[0]?.id ?? null;
-  markShapeDirty(shape, 'advanced_face_deleted');
-  setMessage('Face supprimée.');
-  renderAll();
-}
-
-function cancelAdvancedMeshChanges() {
-  if (!restoreSelectedShapeSnapshot()) return;
-  setMessage('Modifications advanced mesh annulées.');
-  rebuildRepo();
-  renderAll();
 }
 
 function getCurrentNewVariantType() {
@@ -1741,11 +1589,14 @@ function deleteCatalogPiece() {
 function renderShapeForm() {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
+  const locked = isVariantEditingLocked(shape);
   if (dom.shapeIdInput) dom.shapeIdInput.value = shape?.id ?? '';
   if (dom.shapeLabelInput) dom.shapeLabelInput.value = shape?.label ?? '';
   if (dom.shapeFamilyInput) dom.shapeFamilyInput.value = shape?.shape_family ?? '';
-  if (dom.shapeStatusSelect) dom.shapeStatusSelect.value = shape?.status ?? 'draft';
-  if (dom.variantGeometryModeSelect) dom.variantGeometryModeSelect.value = isAdvancedMeshShape(shape) ? 'advanced_mesh' : 'simple';
+  if (dom.shapeStatusSelect) dom.shapeStatusSelect.value = normalizeVariantStatus(shape?.status);
+  if (dom.shapeLabelInput) dom.shapeLabelInput.disabled = locked;
+  if (dom.shapeFamilyInput) dom.shapeFamilyInput.disabled = locked;
+  if (dom.shapeStatusSelect) dom.shapeStatusSelect.disabled = locked;
   if (!dom.cellSummary) return;
   const cells = shape ? getShapeCells(shape, size) : [];
   setElementText(dom.cellSummary, shape ? [
@@ -1753,6 +1604,7 @@ function renderShapeForm() {
     `dimensions   : ${size?.dimensions?.length ?? '?'}×${size?.dimensions?.width ?? '?'}×${size?.dimensions?.height ?? '?'}`,
     `cellules     : ${cells.length}`,
     `mode         : ${shape.generation?.mode ?? 'n/a'}`,
+    `édition      : ${locked ? 'verrouillée' : 'modifiable'}`,
     isParametricShape(shape) ? `type global  : ${shape.generation?.base?.type ?? shape.shape_family}` : '',
     shape.generation?.mode !== 'voxel_grid' && !isParametricShape(shape) ? 'note         : converti en voxel_grid dès modification cellule' : '',
   ].filter(Boolean).join('\n') : 'Aucune variante sélectionnée.');
@@ -1761,9 +1613,11 @@ function renderShapeForm() {
 function renderEditorModeUi() {
   const advancedMode = editorIsAdvancedMode();
   const shape = selectedShape();
+  const locked = isVariantEditingLocked(shape);
+  const hasShape = Boolean(shape);
   const size = getSize(shape?.size_id);
   const pointGridSummary = advancedMode
-    ? summarizeEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP)
+    ? summarizeEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP)
     : null;
   const pointSelectionSummary = advancedMode ? summarizeAdvancedPointSelection(state.selectedAdvancedPointIds) : null;
   if (dom.editorModeToggleBtn) {
@@ -1782,6 +1636,7 @@ function renderEditorModeUi() {
   if (dom.advancedDraftOperationCutInput) dom.advancedDraftOperationCutInput.disabled = !advancedMode;
   if (dom.advancedCutKeepNormalInput) dom.advancedCutKeepNormalInput.disabled = !advancedMode;
   if (dom.advancedCutKeepInverseInput) dom.advancedCutKeepInverseInput.disabled = !advancedMode;
+  if (dom.editorAdvancedModePanel) dom.editorAdvancedModePanel.hidden = !hasShape || locked;
   if (dom.editorAdvancedControls) dom.editorAdvancedControls.hidden = !advancedMode;
   if (dom.editorAdvancedModeSummary) {
     setElementText(dom.editorAdvancedModeSummary, deriveAdvancedModePreviewSummary({
@@ -1789,7 +1644,7 @@ function renderEditorModeUi() {
       size,
       selectedCatalogPieceId: state.selectedCatalogPieceId,
       selectedBase: state.selectedBase,
-      subgridUnit: Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP,
+      subgridUnit: Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP,
       pointGridSummary,
       pointSelectionSummary,
       edgeCount: getActiveAdvancedDraftEdges().length,
@@ -1808,7 +1663,7 @@ function renderEditorModeUi() {
   ];
   for (const selector of lockSelectors) {
     for (const element of document.querySelectorAll(selector)) {
-      element.disabled = advancedMode;
+      element.disabled = advancedMode || locked;
     }
   }
 }
@@ -1854,65 +1709,16 @@ function renderAdvancedFaceOperationControls() {
   if (dom.deleteAdvancedCustomFaceOperationBtn) dom.deleteAdvancedCustomFaceOperationBtn.disabled = !editorIsAdvancedMode() || !advancedPlanarOperations.length;
 }
 
-function renderAdvancedMeshEditor() {
-  const shape = selectedShape();
-  const size = getSize(shape?.size_id);
-  const advanced = isAdvancedMeshShape(shape);
-  const mesh = getAdvancedMesh(shape);
-  if (advanced && !state.selectedAdvancedVertexId) state.selectedAdvancedVertexId = mesh?.vertices?.[0]?.id ?? null;
-  if (advanced && !state.selectedAdvancedFaceId) state.selectedAdvancedFaceId = mesh?.faces?.[0]?.id ?? null;
-  const report = getAdvancedMeshValidation(shape, size);
-  if (dom.advancedMeshGridStepInput) {
-    dom.advancedMeshGridStepInput.value = advanced ? getAdvancedMeshGridStep(mesh, ADVANCED_MESH_DEFAULT_GRID_STEP) : ADVANCED_MESH_DEFAULT_GRID_STEP;
-  }
-  if (dom.advancedMeshSummary) {
-    setElementText(dom.advancedMeshSummary, !shape ? 'Aucune variante sélectionnée.' : [
-      `mode       : ${advanced ? 'advanced_mesh' : 'simple'}`,
-      `baseBox    : ${size?.dimensions ? `${size.dimensions.length}×${size.dimensions.width}×${size.dimensions.height}` : 'n/a'}`,
-      `collision  : ${shape?.collision?.mode ?? 'n/a'}`,
-      `vertices   : ${mesh?.vertices?.length ?? 0}`,
-      `faces      : ${mesh?.faces?.length ?? 0}`,
-      `grid_step  : ${report.gridStep ?? ADVANCED_MESH_DEFAULT_GRID_STEP}`,
-      `validation : ${report.errors.length} erreur(s), ${report.warnings.length} avertissement(s)`,
-    ].join('\n'));
-  }
-
-  if (dom.advancedVertexListSelect) {
-    clearElement(dom.advancedVertexListSelect);
-    for (const vertex of mesh?.vertices ?? []) {
-      const option = document.createElement('option');
-      option.value = vertex.id;
-      option.textContent = `${vertex.id} · ${vertex.x}, ${vertex.y}, ${vertex.z}`;
-      option.selected = vertex.id === state.selectedAdvancedVertexId;
-      appendElement(dom.advancedVertexListSelect, option);
-    }
-  }
-
-  if (dom.advancedFaceListSelect) {
-    clearElement(dom.advancedFaceListSelect);
-    for (const face of mesh?.faces ?? []) {
-      const option = document.createElement('option');
-      option.value = face.id;
-      option.textContent = `${face.id} · ${face.vertices.join(' → ')}`;
-      option.selected = face.id === state.selectedAdvancedFaceId;
-      appendElement(dom.advancedFaceListSelect, option);
-    }
-  }
-
-  syncAdvancedVertexInputs();
-  if (dom.advancedFaceDraftSummary) {
-    setElementText(dom.advancedFaceDraftSummary, state.advancedFaceDraftVertexIds.length
-      ? `Brouillon face : ${state.advancedFaceDraftVertexIds.join(' → ')}`
-      : 'Brouillon face vide.');
-  }
-}
-
 function updateShapeIdentity() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!ensureVariantEditable('Modification identité refusée')) {
+    renderAll(false);
+    return;
+  }
   if (dom.shapeLabelInput) shape.label = dom.shapeLabelInput.value.trim();
   if (dom.shapeFamilyInput) shape.shape_family = slugifyId(dom.shapeFamilyInput.value || shape.shape_family || 'block');
-  if (dom.shapeStatusSelect) shape.status = dom.shapeStatusSelect.value;
+  if (dom.shapeStatusSelect) shape.status = normalizeVariantStatus(dom.shapeStatusSelect.value);
   shape.metadata ??= {};
   shape.metadata.updated_at = new Date().toISOString();
   renderAll(false);
@@ -2050,13 +1856,12 @@ function operationScopeKey(op) {
 function createOperationFromSelectedFace(type) {
   const shape = selectedShape();
   const selectedFace = state.selectedFace;
-  if (isAdvancedMeshShape(shape)) {
-    setMessage('Mode advanced_mesh : corrections voxel désactivées.');
+  if (!shape || !selectedFace) {
+    setMessage('Correction refusée : aucune face sélectionnée.');
     renderOperations();
     return;
   }
-  if (!shape || !selectedFace) {
-    setMessage('Correction refusée : aucune face sélectionnée.');
+  if (!ensureVariantEditable('Ajout correction refusé')) {
     renderOperations();
     return;
   }
@@ -2095,11 +1900,7 @@ function createOperationFromSelectedFace(type) {
 function removeFaceOperation() {
   const shape = selectedShape();
   if (!shape) return;
-  if (isAdvancedMeshShape(shape)) {
-    setMessage('Mode advanced_mesh : aucune correction voxel à supprimer.');
-    renderOperations();
-    return;
-  }
+  if (!ensureVariantEditable('Suppression correction refusée')) return;
   ensureVoxelGeneration(shape);
   const operations = shape.generation.operations ?? [];
   let index = -1;
@@ -2124,10 +1925,6 @@ function removeFaceOperation() {
 
 function renderVariantFaceSummary() {
   if (!dom.variantFaceSummary) return;
-  if (isAdvancedMeshShape()) {
-    setElementText(dom.variantFaceSummary, 'Mode advanced_mesh actif. Les corrections voxel par face sont désactivées.');
-    return;
-  }
   const face = state.selectedFace;
   if (!face) {
     setElementText(dom.variantFaceSummary, 'Aucune face sélectionnée. Clique une face de cellule dans la vue 3D.');
@@ -2229,6 +2026,10 @@ function addAnchor() {
     renderAnchors();
     return;
   }
+  if (!ensureVariantEditable('Ajout ancre refusé')) {
+    renderAnchors();
+    return;
+  }
   const anchors = shape.anchors ??= [];
   const existing = anchors.find((anchor) => anchorMatchesSelectedFace(anchor, selectedFace));
   if (existing) {
@@ -2264,6 +2065,7 @@ function addAnchor() {
 function deleteAnchor() {
   const shape = selectedShape();
   if (!shape) return;
+  if (!ensureVariantEditable('Suppression ancre refusée')) return;
   const anchors = shape.anchors ?? [];
   let target = null;
   if (state.selectedFace) target = anchors.find((anchor) => anchorMatchesSelectedFace(anchor));
@@ -2724,7 +2526,6 @@ function renderPreview() {
   }
 
   cellPickTargets.length = 0;
-  advancedVertexPickTargets.length = 0;
   advancedPointPickTargets.length = 0;
   advancedEdgePickTargets.length = 0;
 
@@ -2736,12 +2537,10 @@ function renderPreview() {
   const previewState = deriveEditorPreviewState({
     shape,
     size,
-    advanced: isAdvancedMeshShape(shape),
     fullCells,
     getShapeCells,
     getSuppressedCellKeysForOperations,
     cellKey,
-    getAdvancedMeshValidation,
   });
   const advancedMode = editorIsAdvancedMode();
 
@@ -2751,7 +2550,7 @@ function renderPreview() {
       size,
       scale: CELL_SCALE,
       symmetry: {},
-      showVoxels: !previewState.advanced,
+      showVoxels: false,
     });
     const preview = meshWithEdges(
       previewGeometry,
@@ -2762,7 +2561,6 @@ function renderPreview() {
   }
 
   if (!advancedMode && isParametricShape(shape) && previewState.shouldRenderVoxelGuide) renderVoxelGuide(previewState.visibleCells, size);
-  if (!advancedMode && previewState.shouldRenderAdvancedHandles) renderAdvancedMeshHandles(shape, size);
   if (!advancedMode) renderCellPickProxies(previewState.visibleCells, size);
   if (advancedMode) {
     renderAdvancedPointGrid(size);
@@ -2786,40 +2584,8 @@ function renderPreview() {
   if (!advancedMode) renderSelectedFaceHint(size);
 }
 
-function renderAdvancedMeshHandles(shape, size) {
-  const mesh = getAdvancedMesh(shape);
-  if (!mesh) return;
-
-  const vertexGeometry = new THREE.SphereGeometry(CELL_SCALE * 0.08, 14, 10);
-  for (const vertex of mesh.vertices ?? []) {
-    const selected = vertex.id === state.selectedAdvancedVertexId;
-    const material = new THREE.MeshBasicMaterial({ color: selected ? SELECTED_COLOR : 0x72c7ff });
-    const marker = new THREE.Mesh(vertexGeometry, material);
-    marker.position.copy(catalogPositionToWorld(vertex, size));
-    marker.userData = { type: 'advanced_vertex', vertexId: vertex.id };
-    advancedVertexPickTargets.push(marker);
-    root.add(marker);
-  }
-
-  if (state.advancedFaceDraftVertexIds.length >= 2) {
-    const positions = [];
-    for (const vertexId of state.advancedFaceDraftVertexIds) {
-      const vertex = mesh.vertices.find((item) => item.id === vertexId);
-      if (!vertex) continue;
-      const world = catalogPositionToWorld(vertex, size);
-      positions.push(world.x, world.y, world.z);
-    }
-    if (positions.length >= 6) {
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: SELECTED_COLOR }));
-      root.add(line);
-    }
-  }
-}
-
 function renderAdvancedPointGrid(size) {
-  const step = Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP;
+  const step = Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP;
   const points = generateEditorPointGrid(size, step);
   if (!points.length) return;
 
@@ -2845,7 +2611,7 @@ function renderAdvancedPointGrid(size) {
 }
 
 function renderAdvancedDraftEdges(size) {
-  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP);
   const pointById = new Map(points.map((point) => [point.id, point]));
   const faceEdgeIds = new Set(getActiveAdvancedDraftFaces().flatMap((face) => face.edges ?? []));
 
@@ -2877,7 +2643,7 @@ function renderAdvancedDraftEdges(size) {
 }
 
 function renderAdvancedDraftFaces(size) {
-  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP);
   const pointById = new Map(points.map((point) => [point.id, point]));
 
   for (const face of getActiveAdvancedDraftFaces()) {
@@ -3180,15 +2946,10 @@ function validateCatalog() {
     if (!size) errors.push(`${shape.id}: size_id introuvable.`);
     if (!shape.generation?.mode) errors.push(`${shape.id}: generation.mode absent.`);
     if (shape.generation?.mode === 'legacy_mesh') warnings.push(`${shape.id}: legacy_mesh à convertir/corriger en voxel_grid ou opérations paramétriques.`);
-    if (shape.generation?.mode === 'advanced_mesh') {
-      const report = getAdvancedMeshValidation(shape, size);
-      for (const issue of report.errors) errors.push(`${shape.id}: ${issue.message}`);
-      for (const issue of report.warnings) warnings.push(`${shape.id}: ${issue.message}`);
-    } else {
-      const cells = getShapeCells(shape, size);
-      if (shape.generation?.mode === 'voxel_grid' && cells.length === 0) warnings.push(`${shape.id}: aucune cellule active.`);
-      if (shape.generation?.mode === 'parametric_shape' && !['point_1', 'point_2', 'point_3'].includes(shape.generation?.base?.type)) errors.push(`${shape.id}: type paramétrique inconnu.`);
-    }
+    if (shape.generation?.mode === 'advanced_mesh') errors.push(`${shape.id}: advanced_mesh est obsolète.`);
+    const cells = getShapeCells(shape, size);
+    if (shape.generation?.mode === 'voxel_grid' && cells.length === 0) warnings.push(`${shape.id}: aucune cellule active.`);
+    if (shape.generation?.mode === 'parametric_shape' && !['point_1', 'point_2', 'point_3'].includes(shape.generation?.base?.type)) errors.push(`${shape.id}: type paramétrique inconnu.`);
     for (const anchor of shape.anchors ?? []) {
       if (!anchor.position || !anchor.normal) errors.push(`${shape.id}/${anchor.id}: position ou normal absent.`);
     }
@@ -3206,10 +2967,8 @@ function validateSelectedShape() {
   const size = getSize(shape?.size_id);
   if (!shape) return { errors: ['Aucune variante sélectionnée.'], warnings };
   if (!size) errors.push(`${shape.id}: taille introuvable.`);
-  if (isAdvancedMeshShape(shape)) {
-    const report = getAdvancedMeshValidation(shape, size);
-    for (const issue of report.errors) errors.push(`${shape.id}: ${issue.message}`);
-    for (const issue of report.warnings) warnings.push(`${shape.id}: ${issue.message}`);
+  if (shape.generation?.mode === 'advanced_mesh') {
+    errors.push(`${shape.id}: advanced_mesh est obsolète.`);
   } else {
     ensureVoxelGeneration(shape);
     const cells = getShapeCells(shape, size);
@@ -3380,7 +3139,6 @@ function renderAll(redrawPreview = true) {
   renderSelectedBaseSummary();
   renderEditorModeUi();
   renderShapeForm();
-  renderAdvancedMeshEditor();
   renderOperations();
   renderAnchors();
   renderSpecProfileSelect();
@@ -3467,8 +3225,9 @@ function createAdvancedDraftEdgeFromSelection() {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
   if (!shape || !size || !editorIsAdvancedMode()) return false;
+  if (!ensureVariantEditable('Création ligne refusée')) return false;
 
-  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   const result = createAdvancedDraftEdgesFromSelection({
     shapeId: shape.id,
@@ -3509,6 +3268,7 @@ function createAdvancedDraftEdgeFromSelection() {
 
 function deleteSelectedAdvancedDraftEdges() {
   if (!state.selectedAdvancedEdgeIds.length) return false;
+  if (!ensureVariantEditable('Suppression ligne refusée')) return false;
   const nextEdges = removeAdvancedDraftEdgesById(getActiveAdvancedDraftEdges(), state.selectedAdvancedEdgeIds);
   setActiveAdvancedDraftEdges(nextEdges);
   const validEdgeIds = nextEdges.map((edge) => edge.id);
@@ -3523,8 +3283,9 @@ function createAdvancedDraftFaceFromSelection() {
   const shape = selectedShape();
   const size = getSize(shape?.size_id);
   if (!shape || !size || !editorIsAdvancedMode()) return false;
+  if (!ensureVariantEditable('Création face refusée')) return false;
 
-  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   let activeEdges = getActiveAdvancedDraftEdges();
   let selectedEdgeIds = normalizeAdvancedEdgeSelection(state.selectedAdvancedEdgeIds);
@@ -3598,6 +3359,7 @@ function createAdvancedDraftFaceFromSelection() {
 function deleteSelectedAdvancedDraftFace() {
   const selectedFace = getSelectedAdvancedDraftFace();
   if (!selectedFace) return false;
+  if (!ensureVariantEditable('Suppression face refusée')) return false;
   setActiveAdvancedDraftFaces(getActiveAdvancedDraftFaces().filter((face) => face.id !== selectedFace.id));
   state.selectedAdvancedDraftFaceId = null;
   setMessage(`Face draft supprimée : ${selectedFace.id}.`);
@@ -3610,8 +3372,9 @@ function commitSelectedAdvancedDraftFaceToOperation() {
   const size = getSize(shape?.size_id);
   const selectedFace = getSelectedAdvancedDraftFace();
   if (!shape || !size || !selectedFace) return false;
+  if (!ensureVariantEditable('Création opération refusée')) return false;
 
-  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || ADVANCED_MESH_DEFAULT_GRID_STEP);
+  const points = generateEditorPointGrid(size, Number(state.catalog?.units?.subgrid_unit) || EDITOR_SUBGRID_DEFAULT_STEP);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   const result = getAdvancedDraftOperationType() === 'cut'
     ? createCutOperation({
@@ -3668,6 +3431,7 @@ function deleteSelectedAdvancedCustomFaceOperation() {
   const shape = selectedShape();
   const selectedOperation = getSelectedAdvancedCustomFaceOperation();
   if (!shape || !selectedOperation) return false;
+  if (!ensureVariantEditable('Suppression opération refusée')) return false;
 
   shape.generation.operations = removeCustomFaceOperationById(shape.generation.operations ?? [], selectedOperation.id);
   markShapeDirty(shape, `${selectedOperation.type}_operation_removed`);
@@ -3681,19 +3445,6 @@ function pickVoxelFace(event) {
   if (editorIsAdvancedMode()) return;
   setPointerFromEditorEvent(event);
   raycaster.setFromCamera(pointer, camera);
-  if (advancedVertexPickTargets.length) {
-    const vertexHits = raycaster.intersectObjects(advancedVertexPickTargets, false);
-    if (vertexHits.length) {
-      const vertexId = vertexHits[0].object.userData.vertexId;
-      state.selectedAdvancedVertexId = vertexId;
-      if (event.shiftKey && !state.advancedFaceDraftVertexIds.includes(vertexId)) {
-        state.advancedFaceDraftVertexIds.push(vertexId);
-      }
-      syncAdvancedVertexInputs(vertexId);
-      renderAll();
-      return;
-    }
-  }
   if (!cellPickTargets.length) return;
   const hits = raycaster.intersectObjects(cellPickTargets, false);
   if (!hits.length) return;
@@ -3959,11 +3710,8 @@ function bindEvents() {
   bindElement(dom.shapeVariantSelect, 'change', () => {
     state.selectedShapeId = dom.shapeVariantSelect.value;
     state.selectedFace = null;
-    state.selectedAdvancedVertexId = getAdvancedMesh(selectedShape())?.vertices?.[0]?.id ?? null;
-    state.selectedAdvancedFaceId = getAdvancedMesh(selectedShape())?.faces?.[0]?.id ?? null;
     resetAdvancedPointSelection();
     resetAdvancedEdgeSelection();
-    state.advancedFaceDraftVertexIds = [];
     if (state.selectedShapeId) storeShapeSnapshot(state.selectedShapeId);
     const piece = findCatalogPiecesForBase().find((item) => item.shape_variant_id === state.selectedShapeId);
     if (piece) state.selectedCatalogPieceId = piece.id;
@@ -3974,11 +3722,8 @@ function bindEvents() {
     state.selectedFace = null;
     const piece = selectedPiece();
     if (piece) state.selectedShapeId = piece.shape_variant_id;
-    state.selectedAdvancedVertexId = getAdvancedMesh(selectedShape())?.vertices?.[0]?.id ?? null;
-    state.selectedAdvancedFaceId = getAdvancedMesh(selectedShape())?.faces?.[0]?.id ?? null;
     resetAdvancedPointSelection();
     resetAdvancedEdgeSelection();
-    state.advancedFaceDraftVertexIds = [];
     if (state.selectedShapeId) storeShapeSnapshot(state.selectedShapeId);
     renderAll();
   });
@@ -3999,6 +3744,11 @@ function bindEvents() {
   bindElement(dom.shapeFamilyInput, 'change', updateShapeIdentity);
   bindElement(dom.shapeStatusSelect, 'change', updateShapeIdentity);
   const handleEditorModeToggle = () => {
+    if (isVariantEditingLocked()) {
+      setMessage('Bascule mode refusée : variante verrouillée.');
+      renderAll(false);
+      return;
+    }
     setEditorMode(editorIsAdvancedMode() ? EDITOR_MODES.SIMPLE : EDITOR_MODES.ADVANCED);
     renderAll();
   };
@@ -4039,32 +3789,6 @@ function bindEvents() {
     renderEditorModeUi();
   });
   bindElement(dom.deleteAdvancedCustomFaceOperationBtn, 'click', deleteSelectedAdvancedCustomFaceOperation);
-  bindElement(dom.variantGeometryModeSelect, 'change', updateVariantGeometryMode);
-  bindElement(dom.addAdvancedVertexBtn, 'click', () => addOrUpdateAdvancedVertex(false));
-  bindElement(dom.updateAdvancedVertexBtn, 'click', () => addOrUpdateAdvancedVertex(true));
-  bindElement(dom.deleteAdvancedVertexBtn, 'click', removeAdvancedVertex);
-  bindElement(dom.addVertexToFaceDraftBtn, 'click', appendSelectedVertexToFaceDraft);
-  bindElement(dom.clearFaceDraftBtn, 'click', clearAdvancedFaceDraft);
-  bindElement(dom.createAdvancedFaceBtn, 'click', addAdvancedFaceFromDraft);
-  bindElement(dom.deleteAdvancedFaceBtn, 'click', removeAdvancedFace);
-  bindElement(dom.cancelAdvancedMeshChangesBtn, 'click', cancelAdvancedMeshChanges);
-  bindElement(dom.advancedVertexListSelect, 'change', () => {
-    state.selectedAdvancedVertexId = dom.advancedVertexListSelect?.value ?? null;
-    syncAdvancedVertexInputs();
-    renderPreview();
-  });
-  bindElement(dom.advancedFaceListSelect, 'change', () => {
-    state.selectedAdvancedFaceId = dom.advancedFaceListSelect?.value ?? null;
-    renderAdvancedMeshEditor();
-  });
-  bindElement(dom.advancedMeshGridStepInput, 'change', () => {
-    const shape = selectedShape();
-    if (!shape || !isAdvancedMeshShape(shape)) return;
-    const gridStep = Number(dom.advancedMeshGridStepInput?.value) || ADVANCED_MESH_DEFAULT_GRID_STEP;
-    shape.generation.visual_mesh.grid_step = gridStep;
-    markShapeDirty(shape, 'advanced_grid_step_updated');
-    renderAll();
-  });
   bindElement(dom.addCellBtn, 'click', () => setCell(true));
   bindElement(dom.removeCellBtn, 'click', () => setCell(false));
   bindElement(dom.resetFullBoxBtn, 'click', resetFullBox);

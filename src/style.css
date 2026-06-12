@@ -610,6 +610,7 @@ input[type="checkbox"] {
 
 #editorApp {
   height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   background: #101114;
@@ -624,13 +625,18 @@ input[type="checkbox"] {
 .editor-main {
   min-width: 0;
   min-height: 0;
+  height: 100%;
   display: block;
+  overflow: hidden;
 }
 
 .editor-viewport-wrap {
   position: relative;
   min-width: 0;
-  min-height: 100vh;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: radial-gradient(circle at 50% 40%, #1b1e27 0, #101114 62%);
 }
 
@@ -644,11 +650,12 @@ input[type="checkbox"] {
 .editor-advanced-mode-panel {
   position: absolute;
   z-index: 7;
-  left: 12px;
+  right: 12px;
   bottom: 12px;
   width: min(430px, calc(100% - 24px));
-  max-height: min(82vh, calc(100% - 24px));
-  overflow: auto;
+  height: 500px;
+  max-height: 500px;
+  overflow: hidden;
   margin: 0;
   padding: 12px;
   border: 1px solid #2f3440;
@@ -656,6 +663,40 @@ input[type="checkbox"] {
   background: linear-gradient(180deg, rgba(22, 25, 33, 0.96), rgba(15, 17, 23, 0.96));
   backdrop-filter: blur(3px);
   pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.editor-overlay-header-card {
+  flex: 0 0 auto;
+  padding: 10px;
+  border: 1px solid #343944;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(28, 32, 40, 0.98), rgba(22, 25, 33, 0.98));
+}
+
+.editor-overlay-toolbar {
+  display: grid;
+  gap: 0;
+}
+
+.editor-overlay-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
+}
+
+.editor-overlay-section {
+  display: grid;
+  gap: 10px;
+}
+
+.editor-overlay-section + .editor-overlay-section {
+  margin-top: 10px;
 }
 
 .editor-mode-toggle {
@@ -663,12 +704,35 @@ input[type="checkbox"] {
   min-height: 34px;
   margin-bottom: 10px;
   font-weight: 650;
+  border: 1px solid #343944;
+  background: #1c2028;
+  color: #d7dbe5;
+  border-radius: 6px;
+}
+
+.editor-mode-toggle.active {
+  border-color: #d46a2c;
+  color: #ffffff;
+  background: #2b211b;
 }
 
 .editor-overlay-tabs {
   display: flex;
   gap: 6px;
   margin-bottom: 10px;
+}
+
+.editor-shape-status-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.editor-shape-status-row label {
+  margin: 0;
+  font-size: 12px;
 }
 
 .editor-overlay-tabs .tab-button {
@@ -775,8 +839,6 @@ input[type="checkbox"] {
 
 #operationListSelect,
 #anchorListSelect,
-#advancedVertexListSelect,
-#advancedFaceListSelect,
 #shapeVariantSelect,
 #catalogPieceSelect,
 #specProfileSelect,
@@ -900,10 +962,17 @@ input[type="checkbox"] {
 
 .tree-size > summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
   padding: 6px;
+}
+
+.catalog-tree-size-actions,
+.catalog-tree-variant-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tree-size > summary.active {
@@ -940,11 +1009,30 @@ input[type="checkbox"] {
   border-color: #333844;
 }
 
+.tree-mini-icon-action {
+  min-width: 34px;
+  width: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-mini-icon-action i {
+  font-size: 16px;
+  line-height: 1;
+}
+
 .tree-mini-action.danger {
   min-width: 54px;
   color: #ffd5d5;
   border-color: #5a2e2e;
   background: #2b1d1f;
+}
+
+.tree-mini-icon-action.danger {
+  min-width: 34px;
+  width: 34px;
 }
 
 .tree-empty-message {
@@ -977,7 +1065,17 @@ input[type="checkbox"] {
 }
 
 .editor-variant-delete-btn {
-  min-width: 64px;
+  min-width: 34px;
+}
+
+#editorAdvancedModePanel[hidden] {
+  display: none !important;
+}
+
+.tree-variant-lock-btn.is-locked {
+  color: #f0c75e;
+  border-color: #6a5930;
+  background: #2f2818;
 }
 
 .tree-variant-button.active {
