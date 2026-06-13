@@ -19,10 +19,12 @@ Pieces are fixed by the game catalog. The app must not generate arbitrary sizes.
 Allowed structure:
 
 ```txt
-family / material
-└── size
-    └── shape variant
-        └── technical profile
+functional family
+└── part type
+    └── material / technology
+        └── size
+            └── shape variant
+                └── technical profile
 ```
 
 A playable catalog entry is not only a size. A real part is identified by:
@@ -42,12 +44,24 @@ Steel 4x3x1, shape variant 03, thermal profile
 Do not merge these concepts:
 
 ```txt
+functional_family  -> category and allowed rules
+part_type          -> functional identity inside a family
+material           -> material/technology identity
 size              -> fixed dimensions
 shape_variant     -> geometry / silhouette
 symmetry_state     -> orientation transform
+placement_rules    -> orientation/mount/zone constraints
 spec_profile       -> stats
 recipe             -> crafting data
 placed_piece        -> instance in a ship
+```
+
+Migration rule:
+
+```txt
+missing type_id           -> legacy structural piece
+missing placement_rules   -> current structural behavior
+shape.allowed_symmetry    -> fallback if placement_rules.allowed_symmetry is absent
 ```
 
 ### 3. Shape fidelity target

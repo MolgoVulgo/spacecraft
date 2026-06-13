@@ -78,7 +78,17 @@ import {
 } from './editor-catalog-persistence.js';
 import { buildAssemblyCatalogFromEditorCatalog } from './assembly-catalog-publication.js';
 import { validateCatalogData, formatValidationIssues } from './catalog-validator.js';
-import { loadUserSettings } from './user-settings.js';
+import { getDefaultUserSettings, loadUserSettings, saveUserSettings } from './user-settings.js';
+import {
+  getCatalogFamiliesForPresentation,
+  resolveDisplayLabel,
+  resolveFamilyColor,
+  resolveFamilyGroupLabel,
+  resolveFamilyLabel,
+  resolvePartLabel,
+  resolveVariantLabel,
+  sanitizeHexColor,
+} from './catalog/familyPresentation.js';
 
 const EDITOR_CATALOG_URL = resolveRuntimePath('data/editor_catalog.json');
 const ASSEMBLY_CATALOG_URL = resolveRuntimePath('data/assembly_catalog.json');
@@ -106,7 +116,8 @@ const ADVANCED_PIECE_DISPLAY_MODES = {
   PIECE: 'piece',
   POINTS: 'points',
 };
-const EDITOR_CAMERA_SETTINGS = loadUserSettings().camera;
+const initialUserSettings = loadUserSettings();
+const EDITOR_CAMERA_SETTINGS = initialUserSettings.camera;
 
 const state = {
   catalog: null,
@@ -131,7 +142,10 @@ const state = {
   advancedPieceDisplayMode: ADVANCED_PIECE_DISPLAY_MODES.PIECE,
   message: '',
   activeViewId: NAVIGATION_CUBE_VIEW_IDS.home,
+  userSettings: initialUserSettings,
   editorUserPreferences: loadEditorUserPreferences(),
+  editorUserSettingsDraft: null,
+  renameDraft: null,
   baseReferenceFamilyId: null,
   variantModalSelection: null,
   editorSave: {
@@ -190,6 +204,15 @@ const dom = {
   saveEditorUserConfigBtn: document.querySelector('#saveEditorUserConfigBtn'),
   resetEditorUserConfigBtn: document.querySelector('#resetEditorUserConfigBtn'),
   editorShowDeleteButtonsToggle: document.querySelector('#editorShowDeleteButtonsToggle'),
+  editorFamilyColorList: document.querySelector('#editorFamilyColorList'),
+  catalogRenameModal: document.querySelector('#catalogRenameModal'),
+  closeCatalogRenameModalBtn: document.querySelector('#closeCatalogRenameModalBtn'),
+  cancelCatalogRenameBtn: document.querySelector('#cancelCatalogRenameBtn'),
+  saveCatalogRenameBtn: document.querySelector('#saveCatalogRenameBtn'),
+  resetCatalogRenameBtn: document.querySelector('#resetCatalogRenameBtn'),
+  catalogRenameTechnicalIdInput: document.querySelector('#catalogRenameTechnicalIdInput'),
+  catalogRenameLabelInput: document.querySelector('#catalogRenameLabelInput'),
+  catalogRenameError: document.querySelector('#catalogRenameError'),
 
   shapeIdInput: document.querySelector('#shapeIdInput'),
   shapeLabelInput: document.querySelector('#shapeLabelInput'),
@@ -378,6 +401,38 @@ function saveEditorUserPreferences(preferences) {
   return normalized;
 }
 
+function cloneSettings(settings = state.userSettings) {
+  return structuredClone(settings);
+}
+
+function getEditorSettings(settings = state.editorUserSettingsDraft ?? state.userSettings) {
+  return settings ?? state.userSettings;
+}
+
+function getFamilyDisplayColor(familyId, settings = getEditorSettings()) {
+  return resolveFamilyColor(familyId, settings, state.catalog);
+}
+
+function getEditorFamilyLabel(familyId, settings = getEditorSettings()) {
+  return resolveFamilyLabel(familyId, settings, state.catalog);
+}
+
+function getEditorFamilyGroupLabel(familyId, settings = getEditorSettings()) {
+  return resolveFamilyGroupLabel(familyId, settings, state.catalog);
+}
+
+function getEditorPartLabel(pieceId, fallback = pieceId, settings = getEditorSettings()) {
+  return resolvePartLabel(pieceId, settings, state.catalog) || fallback;
+}
+
+function getEditorVariantLabel(variantId, fallback = variantId, settings = getEditorSettings()) {
+  return resolveVariantLabel(variantId, settings, state.catalog) || fallback;
+}
+
+function updateEditorUserSettings(nextSettings) {
+  state.userSettings = nextSettings;
+}
+
 function queryFirst(selectors) {
   for (const selector of selectors) {
     const element = document.querySelector(selector);
@@ -394,6 +449,15 @@ function refreshEditorUserConfigDomRefs() {
   dom.saveEditorUserConfigBtn = queryFirst(['#saveEditorUserConfigBtn', '#saveEditorPreferencesBtn']);
   dom.resetEditorUserConfigBtn = queryFirst(['#resetEditorUserConfigBtn', '#resetEditorPreferencesBtn']);
   dom.editorShowDeleteButtonsToggle = queryFirst(['#editorShowDeleteButtonsToggle', '#showDeleteReferenceButtonsToggle']);
+  dom.editorFamilyColorList = queryFirst(['#editorFamilyColorList']);
+  dom.catalogRenameModal = queryFirst(['#catalogRenameModal']);
+  dom.closeCatalogRenameModalBtn = queryFirst(['#closeCatalogRenameModalBtn']);
+  dom.cancelCatalogRenameBtn = queryFirst(['#cancelCatalogRenameBtn']);
+  dom.saveCatalogRenameBtn = queryFirst(['#saveCatalogRenameBtn']);
+  dom.resetCatalogRenameBtn = queryFirst(['#resetCatalogRenameBtn']);
+  dom.catalogRenameTechnicalIdInput = queryFirst(['#catalogRenameTechnicalIdInput']);
+  dom.catalogRenameLabelInput = queryFirst(['#catalogRenameLabelInput']);
+  dom.catalogRenameError = queryFirst(['#catalogRenameError']);
 }
 
 function normalizeEditorUserConfigMarkup() {
@@ -468,6 +532,69 @@ function fillEditorUserConfigForm(preferences = state.editorUserPreferences) {
   if (dom.editorShowDeleteButtonsToggle) {
     dom.editorShowDeleteButtonsToggle.checked = Boolean(preferences?.showDeleteButtons);
   }
+  renderEditorFamilyColorRows(getEditorSettings());
+}
+
+function renderEditorFamilyColorRows(settings = getEditorSettings()) {
+  if (!dom.editorFamilyColorList) return;
+  clearElement(dom.editorFamilyColorList);
+
+  for (const family of getCatalogFamiliesForPresentation(state.catalog)) {
+    const row = document.createElement('div');
+    row.className = 'editor-family-color-row';
+
+    const label = document.createElement('span');
+    label.className = 'editor-family-color-label';
+    label.textContent = getEditorFamilyLabel(family.id, settings);
+
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = getFamilyDisplayColor(family.id, settings);
+    colorInput.dataset.familyId = family.id;
+
+    const hexInput = document.createElement('input');
+    hexInput.type = 'text';
+    hexInput.value = getFamilyDisplayColor(family.id, settings);
+    hexInput.dataset.familyId = family.id;
+    hexInput.setAttribute('spellcheck', 'false');
+
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'editor-family-color-reset-btn';
+    resetBtn.textContent = 'Reset';
+    resetBtn.dataset.familyId = family.id;
+
+    colorInput.addEventListener('input', () => {
+      updateEditorFamilyColorDraft(family.id, colorInput.value);
+      hexInput.value = getFamilyDisplayColor(family.id);
+    });
+    hexInput.addEventListener('change', () => {
+      const value = sanitizeHexColor(hexInput.value, null);
+      updateEditorFamilyColorDraft(family.id, value);
+      const resolved = getFamilyDisplayColor(family.id);
+      colorInput.value = resolved;
+      hexInput.value = resolved;
+    });
+    resetBtn.addEventListener('click', () => {
+      updateEditorFamilyColorDraft(family.id, null);
+      const resolved = getFamilyDisplayColor(family.id);
+      colorInput.value = resolved;
+      hexInput.value = resolved;
+    });
+
+    row.append(label, colorInput, hexInput, resetBtn);
+    dom.editorFamilyColorList.append(row);
+  }
+}
+
+function updateEditorFamilyColorDraft(familyId, value) {
+  const settings = getEditorSettings();
+  settings.editor.familyColors ??= {};
+  const safeValue = sanitizeHexColor(value, null);
+  if (safeValue) settings.editor.familyColors[familyId] = safeValue;
+  else delete settings.editor.familyColors[familyId];
+  state.editorUserSettingsDraft = settings;
+  renderAll(false);
 }
 
 function applyEditorUserPreferences(preferences = state.editorUserPreferences) {
@@ -488,7 +615,13 @@ function applyEditorUserPreferences(preferences = state.editorUserPreferences) {
 
 function setEditorUserConfigModalOpen(open) {
   if (!dom.editorUserConfigModal) return;
-  if (open) fillEditorUserConfigForm(state.editorUserPreferences);
+  if (open) {
+    state.editorUserSettingsDraft = cloneSettings();
+    fillEditorUserConfigForm(state.editorUserPreferences);
+  } else {
+    state.editorUserSettingsDraft = null;
+    renderAll(false);
+  }
   dom.editorUserConfigModal.classList.toggle('open', open);
   dom.editorUserConfigModal.setAttribute('aria-hidden', String(!open));
   if (open) dom.editorShowDeleteButtonsToggle?.focus();
@@ -496,6 +629,9 @@ function setEditorUserConfigModalOpen(open) {
 
 function resetEditorUserConfigForm() {
   fillEditorUserConfigForm(DEFAULT_EDITOR_USER_PREFERENCES);
+  state.editorUserSettingsDraft = cloneSettings(getDefaultUserSettings());
+  renderEditorFamilyColorRows(state.editorUserSettingsDraft);
+  renderAll(false);
 }
 
 function persistEditorDeleteButtonPreference() {
@@ -506,8 +642,72 @@ function persistEditorDeleteButtonPreference() {
   return nextPreferences;
 }
 
+function setCatalogRenameModalError(visible) {
+  if (!dom.catalogRenameError) return;
+  dom.catalogRenameError.hidden = !visible;
+}
+
+function setCatalogRenameModalOpen(open) {
+  if (!dom.catalogRenameModal) return;
+  if (!open) {
+    dom.catalogRenameModal.classList.remove('open');
+    dom.catalogRenameModal.setAttribute('aria-hidden', 'true');
+    state.renameDraft = null;
+    setCatalogRenameModalError(false);
+    return;
+  }
+  dom.catalogRenameModal.classList.add('open');
+  dom.catalogRenameModal.setAttribute('aria-hidden', 'false');
+  if (dom.catalogRenameTechnicalIdInput) dom.catalogRenameTechnicalIdInput.value = state.renameDraft?.id ?? '';
+  if (dom.catalogRenameLabelInput) dom.catalogRenameLabelInput.value = state.renameDraft?.label ?? '';
+  setCatalogRenameModalError(false);
+  dom.catalogRenameLabelInput?.focus();
+  dom.catalogRenameLabelInput?.select();
+}
+
+function openCatalogRenameModal(scope, id, catalogDefault, title = 'Renommer') {
+  if (!scope || !id) return;
+  state.renameDraft = {
+    scope,
+    id,
+    title,
+    defaultLabel: String(catalogDefault ?? '').trim() || id,
+    label: resolveDisplayLabel(scope, id, state.userSettings, catalogDefault),
+  };
+  const titleElement = document.querySelector('#catalogRenameModalTitle');
+  if (titleElement) titleElement.textContent = title;
+  setCatalogRenameModalOpen(true);
+}
+
+function resetCatalogRenameDraft() {
+  if (!state.renameDraft) return;
+  state.renameDraft.label = state.renameDraft.defaultLabel;
+  if (dom.catalogRenameLabelInput) dom.catalogRenameLabelInput.value = state.renameDraft.defaultLabel;
+  setCatalogRenameModalError(false);
+}
+
+function saveCatalogRenameDraft() {
+  if (!state.renameDraft) return;
+  const nextLabel = String(dom.catalogRenameLabelInput?.value ?? '').trim();
+  if (!nextLabel) {
+    setCatalogRenameModalError(true);
+    return;
+  }
+  const nextSettings = cloneSettings();
+  nextSettings.editor.labels ??= { families: {}, types: {}, parts: {}, variants: {} };
+  nextSettings.editor.labels[state.renameDraft.scope] ??= {};
+  if (nextLabel === state.renameDraft.defaultLabel) delete nextSettings.editor.labels[state.renameDraft.scope][state.renameDraft.id];
+  else nextSettings.editor.labels[state.renameDraft.scope][state.renameDraft.id] = nextLabel;
+  updateEditorUserSettings(saveUserSettings(nextSettings));
+  renderAll(false);
+  setCatalogRenameModalOpen(false);
+}
+
 function saveEditorUserConfigForm() {
   persistEditorDeleteButtonPreference();
+  updateEditorUserSettings(saveUserSettings(state.editorUserSettingsDraft ?? state.userSettings));
+  state.editorUserSettingsDraft = null;
+  renderAll(false);
   setEditorUserConfigModalOpen(false);
 }
 
@@ -695,7 +895,40 @@ function pad2(value) {
 }
 
 function getBaseGroups() {
-  if (Array.isArray(state.catalog.base_piece_models)) return state.catalog.base_piece_models;
+  if (state.catalog && Array.isArray(state.catalog.base_piece_models)) {
+    const groups = state.catalog.base_piece_models.map((group) => ({ ...group }));
+    const familyById = new Map((state.catalog.families ?? []).map((family) => [family.id, family]));
+    const sizesByFamilyId = new Map();
+
+    for (const piece of state.catalog.catalog_pieces ?? []) {
+      if (!piece?.family_id || !piece?.size_id) continue;
+      const sizes = sizesByFamilyId.get(piece.family_id) ?? new Set();
+      sizes.add(piece.size_id);
+      sizesByFamilyId.set(piece.family_id, sizes);
+    }
+
+    for (const [familyId, sizes] of sizesByFamilyId.entries()) {
+      let group = groups.find((item) => item?.family_id === familyId);
+      if (!group) {
+        const family = familyById.get(familyId);
+        group = {
+          id: familyId,
+          label_fr: family?.group_label_fr ?? family?.label_fr?.toUpperCase?.() ?? familyId,
+          family_id: familyId,
+          piece_label_fr: family?.label_fr ?? familyId,
+          sizes: [],
+        };
+        groups.push(group);
+      }
+      group.sizes ??= [];
+      for (const sizeId of sizes) {
+        if (!group.sizes.includes(sizeId)) group.sizes.push(sizeId);
+      }
+      group.sizes.sort(compareSizeIds);
+    }
+
+    return groups;
+  }
   return [
     { id: 'steel', label_fr: 'ACIER', family_id: 'steel', piece_label_fr: 'Acier', sizes: ['4x3x1', '6x3x1', '8x3x1', '4x3x2', '6x3x2', '8x3x2', '8x6x2'] },
     { id: 'titanium_superior', label_fr: 'TITANE SUPÉRIEUR', family_id: 'titanium_superior', piece_label_fr: 'Titane', sizes: ['4x3x1', '6x3x1', '8x3x1', '4x3x2', '6x3x2', '8x3x2', '8x6x2', '12x6x2', '16x6x2'] },
@@ -709,7 +942,7 @@ function getBaseGroupByFamilyId(familyId) {
 }
 
 function getFamilyLabel(familyId) {
-  return getBaseGroupByFamilyId(familyId)?.piece_label_fr ?? getFamily(familyId)?.label_fr ?? familyId;
+  return getEditorFamilyLabel(familyId);
 }
 
 function makeSizeId(length, width, height) {
@@ -743,15 +976,17 @@ function renderBaseModels() {
   clearElement(dom.baseModelTree);
   const groups = getBaseGroups();
   for (const group of groups) {
+    const familyAccent = getFamilyDisplayColor(group.family_id);
     const familyDetails = document.createElement('details');
     familyDetails.className = 'tree-family catalog-tree-family';
     familyDetails.open = state.selectedBase?.family_id === group.family_id || group === groups[0];
 
     const familySummary = document.createElement('summary');
     familySummary.className = 'tree-family-summary catalog-tree-family-summary';
+    familySummary.style.setProperty('--family-accent', familyAccent);
     const familyTitle = document.createElement('span');
     familyTitle.className = 'tree-family-title catalog-tree-family-title';
-    familyTitle.textContent = group.label_fr;
+    familyTitle.textContent = getEditorFamilyGroupLabel(group.family_id);
     const addBaseBtn = document.createElement('button');
     addBaseBtn.type = 'button';
     addBaseBtn.className = 'tree-family-add-action catalog-tree-action catalog-tree-family-add-btn';
@@ -763,7 +998,23 @@ function renderBaseModels() {
       event.stopPropagation();
       openBaseReferenceModal(group.family_id);
     });
-    familySummary.append(familyTitle, addBaseBtn);
+    const renameFamilyBtn = document.createElement('button');
+    renameFamilyBtn.type = 'button';
+    renameFamilyBtn.className = 'tree-mini-action tree-mini-icon-action catalog-tree-action catalog-tree-action-rename-btn';
+    renameFamilyBtn.title = `Renommer ${getEditorFamilyLabel(group.family_id)}`;
+    renameFamilyBtn.setAttribute('aria-label', `Renommer ${getEditorFamilyLabel(group.family_id)}`);
+    renameFamilyBtn.innerHTML = '<i class="ri-wrench-line" aria-hidden="true"></i>';
+    renameFamilyBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCatalogRenameModal('families', group.family_id, getFamily(group.family_id)?.label_fr ?? group.family_id, 'Renommer la famille');
+    });
+
+    const familyActionGroup = document.createElement('div');
+    familyActionGroup.className = 'catalog-tree-size-actions';
+    familyActionGroup.append(renameFamilyBtn, addBaseBtn);
+
+    familySummary.append(familyTitle, familyActionGroup);
     familyDetails.append(familySummary);
 
     for (const sizeId of group.sizes) {
@@ -778,7 +1029,9 @@ function renderBaseModels() {
       const selectBtn = document.createElement('button');
       selectBtn.type = 'button';
       selectBtn.className = 'tree-node-button catalog-tree-size-select-btn';
-      selectBtn.textContent = `${group.piece_label_fr} ${sizeId}`;
+      selectBtn.style.setProperty('--family-accent', familyAccent);
+      const primaryPiece = getCatalogPiecesForBase(group.family_id, sizeId)[0] ?? null;
+      selectBtn.textContent = `${primaryPiece ? getEditorPartLabel(primaryPiece.id, group.piece_label_fr) : getEditorFamilyLabel(group.family_id)} ${sizeId}`;
       selectBtn.dataset.treeAction = 'select-size';
       selectBtn.addEventListener('click', (event) => {
         event.preventDefault();
@@ -788,6 +1041,19 @@ function renderBaseModels() {
 
       const sizeActionGroup = document.createElement('div');
       sizeActionGroup.className = 'catalog-tree-size-actions';
+
+      const renamePartBtn = document.createElement('button');
+      renamePartBtn.type = 'button';
+      renamePartBtn.className = 'tree-mini-action tree-mini-icon-action catalog-tree-action catalog-tree-action-rename-btn';
+      renamePartBtn.title = `Renommer ${selectBtn.textContent}`;
+      renamePartBtn.setAttribute('aria-label', `Renommer ${selectBtn.textContent}`);
+      renamePartBtn.innerHTML = '<i class="ri-wrench-line" aria-hidden="true"></i>';
+      renamePartBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!primaryPiece) return;
+        openCatalogRenameModal('parts', primaryPiece.id, primaryPiece.label_fr ?? primaryPiece.id, 'Renommer la pièce');
+      });
 
       const specBtn = document.createElement('button');
       specBtn.type = 'button';
@@ -844,7 +1110,7 @@ function renderBaseModels() {
         deleteBaseReferenceByFamilyAndSize(group.family_id, sizeId);
       });
 
-      sizeActionGroup.append(specBtn, recipeBtn, createVariantBtn, deleteRootBtn);
+      sizeActionGroup.append(renamePartBtn, specBtn, recipeBtn, createVariantBtn, deleteRootBtn);
       sizeSummary.append(selectBtn, sizeActionGroup);
       sizeDetails.append(sizeSummary);
 
@@ -883,6 +1149,7 @@ function renderBaseModels() {
         const variant = document.createElement('button');
         variant.type = 'button';
         variant.className = 'tree-variant-button catalog-tree-variant-select-btn';
+        variant.style.setProperty('--family-accent', familyAccent);
         if (isBaseActive && shape.id === state.selectedShapeId) variant.classList.add('active');
         const variantIconIndex = Number(shape?.metadata?.icon_index ?? shape?.variant_index);
         if (Number.isInteger(variantIconIndex) && variantIconIndex > 0) {
@@ -895,7 +1162,7 @@ function renderBaseModels() {
         }
         const label = document.createElement('span');
         label.className = 'tree-variant-label';
-        label.textContent = `↳ ${shape.label ?? shape.id}`;
+        label.textContent = `↳ ${getEditorVariantLabel(shape.id, shape.label ?? shape.id)}`;
         variant.append(label);
         variant.dataset.treeAction = 'select-variant';
         variant.addEventListener('click', () => {
@@ -907,6 +1174,18 @@ function renderBaseModels() {
           resetAdvancedPointSelection();
           resetAdvancedEdgeSelection();
           renderAll();
+        });
+
+        const renameVariantBtn = document.createElement('button');
+        renameVariantBtn.type = 'button';
+        renameVariantBtn.className = 'tree-mini-action tree-mini-icon-action catalog-tree-action catalog-tree-action-rename-btn';
+        renameVariantBtn.title = `Renommer ${getEditorVariantLabel(shape.id, shape.label ?? shape.id)}`;
+        renameVariantBtn.setAttribute('aria-label', `Renommer ${getEditorVariantLabel(shape.id, shape.label ?? shape.id)}`);
+        renameVariantBtn.innerHTML = '<i class="ri-wrench-line" aria-hidden="true"></i>';
+        renameVariantBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openCatalogRenameModal('variants', shape.id, shape.label ?? shape.id, 'Renommer la variante');
         });
 
         const deleteBtn = document.createElement('button');
@@ -923,7 +1202,7 @@ function renderBaseModels() {
           deleteVariantById(shape.id);
         });
 
-        variantActionGroup.append(variantLockBtn, deleteBtn);
+        variantActionGroup.append(renameVariantBtn, variantLockBtn, deleteBtn);
         variantRow.append(variant, variantActionGroup);
         variants.append(variantRow);
       }
@@ -937,9 +1216,9 @@ function renderBaseModels() {
 function selectBaseModel(group, sizeId, options = {}) {
   state.selectedBase = {
     group_id: group.id,
-    group_label_fr: group.label_fr,
+    group_label_fr: getEditorFamilyGroupLabel(group.family_id),
     family_id: group.family_id,
-    piece_label_fr: group.piece_label_fr,
+    piece_label_fr: getEditorFamilyLabel(group.family_id),
     size_id: sizeId,
   };
 
@@ -997,7 +1276,7 @@ function renderShapeSelect() {
   for (const shape of shapes) {
     const option = document.createElement('option');
     option.value = shape.id;
-    option.textContent = `${shape.id} · ${shape.label ?? `v${pad2(shape.variant_index)}`} · ${shape.generation?.mode ?? '?'}`;
+    option.textContent = `${shape.id} · ${getEditorVariantLabel(shape.id, shape.label ?? `v${pad2(shape.variant_index)}`)} · ${shape.generation?.mode ?? '?'}`;
     option.selected = shape.id === state.selectedShapeId;
     appendElement(dom.shapeVariantSelect, option);
   }
@@ -1010,7 +1289,7 @@ function renderCatalogPieceSelect() {
   for (const piece of pieces) {
     const option = document.createElement('option');
     option.value = piece.id;
-    option.textContent = `${piece.label_fr} · ${piece.shape_variant_id} · ${piece.spec_profile_id}`;
+    option.textContent = `${getEditorPartLabel(piece.id, piece.label_fr ?? piece.id)} · ${piece.shape_variant_id} · ${piece.spec_profile_id}`;
     option.selected = piece.id === state.selectedCatalogPieceId;
     appendElement(dom.catalogPieceSelect, option);
   }
@@ -1023,8 +1302,10 @@ function renderSelectedBaseSummary() {
   const piece = selectedPiece();
   const size = getSize(base?.size_id);
   const cells = shape ? getShapeCells(shape, size) : [];
+  const familyAccent = base ? getFamilyDisplayColor(base.family_id) : 'var(--panel-border)';
+  dom.selectedBaseSummary.style.setProperty('--family-accent', familyAccent);
   setElementText(dom.selectedBaseSummary, base ? [
-    `modèle       : ${base.piece_label_fr} ${base.size_id}`,
+    `modèle       : ${piece ? getEditorPartLabel(piece.id, piece.label_fr ?? piece.id) : getEditorFamilyLabel(base.family_id)} ${base.size_id}`,
     `family_id    : ${base.family_id}`,
     `shape        : ${shape?.id ?? 'aucune'}`,
     `édition      : ${shape ? (isVariantEditingLocked(shape) ? 'verrouillée' : 'modifiable') : 'n/a'}`,
@@ -2325,7 +2606,7 @@ function renderRecipeEditor() {
 
 function renderModalContexts() {
   const text = state.selectedBase
-    ? `${state.selectedBase.group_label_fr}\n${state.selectedBase.piece_label_fr} ${state.selectedBase.size_id}\nfamily_id: ${state.selectedBase.family_id}\nsize_id: ${state.selectedBase.size_id}`
+    ? `${getEditorFamilyGroupLabel(state.selectedBase.family_id)}\n${getEditorFamilyLabel(state.selectedBase.family_id)} ${state.selectedBase.size_id}\nfamily_id: ${state.selectedBase.family_id}\nsize_id: ${state.selectedBase.size_id}`
     : 'Aucun modèle sélectionné.';
   if (dom.specModalContext) dom.specModalContext.textContent = text;
   if (dom.recipeModalContext) dom.recipeModalContext.textContent = text;
@@ -3007,7 +3288,7 @@ function renderStats() {
     `mode       : éditeur catalogue`,
     `ui mode    : ${getCurrentEditorMode()}`,
     `schéma     : ${state.catalog?.schema_version ?? 'inconnu'}`,
-    `modèle     : ${base ? `${base.piece_label_fr} ${base.size_id}` : 'aucun'}`,
+    `modèle     : ${base ? `${getEditorFamilyLabel(base.family_id)} ${base.size_id}` : 'aucun'}`,
     `famille    : ${base?.family_id ?? 'n/a'}`,
     `shape      : ${shape?.id ?? 'n/a'}`,
     `cellules   : ${cells.length}`,
@@ -4162,7 +4443,14 @@ function bindEditorCellKeyboardNavigation() {
       event.stopPropagation();
       return;
     }
+    if (event.key === 'Escape' && dom.catalogRenameModal?.classList.contains('open')) {
+      setCatalogRenameModalOpen(false);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (dom.editorUserConfigModal?.classList.contains('open')
+      || dom.catalogRenameModal?.classList.contains('open')
       || dom.baseReferenceModal?.classList.contains('open')
       || dom.variantCreationModal?.classList.contains('open')) return;
     if (event.key === 'f' || event.key === 'F') {
@@ -4240,6 +4528,20 @@ function bindEvents() {
   bindElement(dom.editorShowDeleteButtonsToggle, 'change', persistEditorDeleteButtonPreference);
   bindElement(dom.editorUserConfigModal, 'click', (event) => {
     if (event.target === dom.editorUserConfigModal) setEditorUserConfigModalOpen(false);
+  });
+  bindElement(dom.closeCatalogRenameModalBtn, 'click', () => setCatalogRenameModalOpen(false));
+  bindElement(dom.cancelCatalogRenameBtn, 'click', () => setCatalogRenameModalOpen(false));
+  bindElement(dom.resetCatalogRenameBtn, 'click', resetCatalogRenameDraft);
+  bindElement(dom.saveCatalogRenameBtn, 'click', saveCatalogRenameDraft);
+  bindElement(dom.catalogRenameLabelInput, 'input', () => setCatalogRenameModalError(false));
+  bindElement(dom.catalogRenameLabelInput, 'keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveCatalogRenameDraft();
+    }
+  });
+  bindElement(dom.catalogRenameModal, 'click', (event) => {
+    if (event.target === dom.catalogRenameModal) setCatalogRenameModalOpen(false);
   });
 
   bindElement(dom.shapeVariantSelect, 'change', () => {

@@ -27,6 +27,7 @@ export function applyVariantToAssemblyInstance({
   createAssemblyEdgeGeometry,
   createAnchorGroup,
   disposeAnchorGroup,
+  buildInstanceLabel,
   setSelectedCatalogPieceId,
   refreshAfterApply,
   setMessage,
@@ -58,7 +59,9 @@ export function applyVariantToAssemblyInstance({
   const preservedScale = instance.group.scale.clone();
 
   instance.catalogPieceId = nextPiece.id;
-  instance.label = `${nextPiece.label_fr || nextPiece.id} #${instance.id.replace('placed_', '')}`;
+  instance.label = buildInstanceLabel
+    ? buildInstanceLabel(nextPiece, instance)
+    : `${nextPiece.label_fr || nextPiece.id} #${instance.id.replace('placed_', '')}`;
   instance.mesh.geometry = nextGeometry;
   instance.edges.geometry = createAssemblyEdgeGeometry(nextPiece, nextGeometry);
   instance.edges.visible = true;

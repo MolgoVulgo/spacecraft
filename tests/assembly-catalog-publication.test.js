@@ -18,6 +18,13 @@ function createEditorCatalog() {
       { id: 'steel' },
       { id: 'alloy' },
     ],
+    part_types: [
+      { id: 'engine', family_id: 'steel', requires_placement_rules: true },
+    ],
+    materials: [
+      { id: 'steel_material', label_fr: 'Acier' },
+      { id: 'unused_material', label_fr: 'Unused' },
+    ],
     shape_variants: [
       {
         id: 'shape_draft',
@@ -51,7 +58,7 @@ function createEditorCatalog() {
     ],
     catalog_pieces: [
       { id: 'piece_draft', family_id: 'steel', size_id: '4x3x1', shape_variant_id: 'shape_draft', spec_profile_id: 'spec_ok', recipe_id: 'recipe_ok' },
-      { id: 'piece_validated', family_id: 'steel', size_id: '4x3x1', shape_variant_id: 'shape_validated', spec_profile_id: 'spec_ok', recipe_id: 'recipe_ok' },
+      { id: 'piece_validated', family_id: 'steel', type_id: 'engine', material_id: 'steel_material', size_id: '4x3x1', shape_variant_id: 'shape_validated', spec_profile_id: 'spec_ok', recipe_id: 'recipe_ok' },
     ],
     base_piece_models: [
       { family_id: 'steel', sizes: ['4x3x1', '6x3x1'] },
@@ -86,6 +93,8 @@ test('publication filters linked pieces and removes orphan specs/recipes', () =>
   assert.deepEqual(result.catalog.catalog_pieces.map((piece) => piece.id), ['piece_validated']);
   assert.deepEqual(result.catalog.spec_profiles.map((spec) => spec.id), ['spec_ok']);
   assert.deepEqual(result.catalog.recipes.map((recipe) => recipe.id), ['recipe_ok']);
+  assert.deepEqual(result.catalog.part_types.map((partType) => partType.id), ['engine']);
+  assert.deepEqual(result.catalog.materials.map((material) => material.id), ['steel_material']);
 });
 
 test('publication filters base model sizes to published sizes', () => {

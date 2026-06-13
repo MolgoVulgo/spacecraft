@@ -51,3 +51,19 @@ test('assembly-consumed variant indexes stay within icon range', async () => {
     );
   }
 });
+
+test('functional propulsion sample is present and references a valid shared shape', async () => {
+  const catalog = await loadCatalog();
+  const piece = (catalog.catalog_pieces ?? []).find((item) => item.id === 'piece_engine_4x3x1_basic');
+  const shape = (catalog.shape_variants ?? []).find((item) => item.id === piece?.shape_variant_id);
+  const partType = (catalog.part_types ?? []).find((item) => item.id === piece?.type_id);
+  const material = (catalog.materials ?? []).find((item) => item.id === piece?.material_id);
+
+  assert.ok(piece, 'Missing propulsion sample piece');
+  assert.equal(piece.family_id, 'propulsion');
+  assert.equal(partType?.family_id, 'propulsion');
+  assert.equal(material?.id, 'steel');
+  assert.ok(shape, `Missing shared shape variant for propulsion sample: ${piece?.shape_variant_id}`);
+  assert.equal(piece.placement_rules.allowed_orientations.length, 2);
+  assert.deepEqual(piece.placement_rules.allowed_symmetry, { length: false, width: true, height: false });
+});

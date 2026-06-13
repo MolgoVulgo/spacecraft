@@ -73,6 +73,8 @@ export function buildAssemblyCatalogFromEditorCatalog(editorCatalog, options = {
   const publishedSpecIds = new Set(publishedPieces.map((piece) => piece.spec_profile_id).filter(Boolean));
   const publishedRecipeIds = new Set(publishedPieces.map((piece) => piece.recipe_id).filter(Boolean));
   const publishedFamilyIds = new Set(publishedPieces.map((piece) => piece.family_id).filter(Boolean));
+  const publishedPartTypeIds = new Set(publishedPieces.map((piece) => piece.type_id).filter(Boolean));
+  const publishedMaterialIds = new Set(publishedPieces.map((piece) => piece.material_id).filter(Boolean));
   const publishedSizeIds = new Set([
     ...publishedPieces.map((piece) => piece.size_id).filter(Boolean),
     ...publishedShapes.map((shape) => shape.size_id).filter(Boolean),
@@ -86,6 +88,8 @@ export function buildAssemblyCatalogFromEditorCatalog(editorCatalog, options = {
     ship_blueprint_schema: catalog.ship_blueprint_schema,
     sizes: (catalog.sizes ?? []).filter((size) => publishedSizeIds.has(size?.id)),
     families: (catalog.families ?? []).filter((family) => publishedFamilyIds.has(family?.id)),
+    part_types: (catalog.part_types ?? []).filter((partType) => publishedPartTypeIds.has(partType?.id)),
+    materials: (catalog.materials ?? []).filter((material) => publishedMaterialIds.has(material?.id)),
     shape_variants: publishedShapes,
     spec_profiles: (catalog.spec_profiles ?? []).filter((spec) => publishedSpecIds.has(spec?.id)),
     recipes: (catalog.recipes ?? []).filter((recipe) => publishedRecipeIds.has(recipe?.id)),

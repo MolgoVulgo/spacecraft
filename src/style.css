@@ -1859,11 +1859,72 @@ canvas.catalog-drop-target {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding-left: 10px;
+  border-left: 4px solid var(--family-accent, var(--panel-border));
+  border-radius: 8px;
 }
 
 .tree-family-title {
   min-width: 0;
   text-align: left;
+}
+
+.tree-node-button.catalog-tree-size-select-btn,
+.tree-variant-button.catalog-tree-variant-select-btn,
+.catalog-size-item,
+.shape-palette-item.catalog-piece-item,
+.selection-stats-overlay,
+.selected-summary {
+  --family-accent: var(--panel-border);
+}
+
+.tree-node-button.catalog-tree-size-select-btn,
+.tree-variant-button.catalog-tree-variant-select-btn,
+.catalog-size-item,
+.shape-palette-item.catalog-piece-item {
+  border-left: 4px solid var(--family-accent);
+}
+
+.selected-summary,
+.selection-stats-overlay {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--family-accent) 35%, transparent);
+  border-left: 4px solid var(--family-accent);
+}
+
+.catalog-tree-action-rename-btn {
+  color: var(--family-accent, #f0c75e);
+}
+
+.editor-family-color-list {
+  display: grid;
+  gap: 10px;
+}
+
+.editor-family-color-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 120px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.editor-family-color-label {
+  min-width: 0;
+  color: var(--panel-text);
+}
+
+.editor-family-color-row input[type="color"] {
+  padding: 3px;
+  min-height: 36px;
+}
+
+.editor-family-color-reset-btn {
+  min-width: 80px;
+}
+
+.editor-form-error {
+  margin-top: 8px;
+  color: #ff7a7a;
+  font-size: 12px;
 }
 
 .tree-family-add-action {

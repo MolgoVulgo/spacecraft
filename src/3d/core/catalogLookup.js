@@ -6,6 +6,8 @@ export function createCatalogLookup(catalog = {}) {
   return {
     sizes: mapById(catalog.sizes),
     families: mapById(catalog.families),
+    partTypes: mapById(catalog.part_types),
+    materials: mapById(catalog.materials),
     shapeVariants: mapById(catalog.shape_variants),
     specProfiles: mapById(catalog.spec_profiles),
     recipes: mapById(catalog.recipes),

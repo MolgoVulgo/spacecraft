@@ -11,6 +11,8 @@ test('catalog lookup finds a piece by family, size and variant index', () => {
   const catalog = {
     sizes: [{ id: '4x3x1' }],
     families: [{ id: 'steel' }],
+    part_types: [{ id: 'engine' }],
+    materials: [{ id: 'steel_material' }],
     shape_variants: [
       { id: 'shape_base', size_id: '4x3x1', variant_index: 0 },
       { id: 'shape_v01', size_id: '4x3x1', variant_index: 1 },
@@ -25,6 +27,8 @@ test('catalog lookup finds a piece by family, size and variant index', () => {
 
   const lookup = createCatalogLookup(catalog);
   assert.equal(lookup.catalogPieces.get('piece_v01')?.id, 'piece_v01');
+  assert.equal(lookup.partTypes.get('engine')?.id, 'engine');
+  assert.equal(lookup.materials.get('steel_material')?.id, 'steel_material');
   assert.equal(findCatalogPieceByFamilySizeVariant(catalog, 'steel', '4x3x1', 1)?.id, 'piece_v01');
 });
 

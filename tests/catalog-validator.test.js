@@ -91,3 +91,183 @@ test('catalog validator rejects obsolete advanced_mesh variants', () => {
   assert.equal(report.valid, false);
   assert.ok(report.errors.some((issue) => issue.code === 'obsolete_generation'));
 });
+
+test('catalog validator accepts functional family entries with placement rules', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: { subgrid_unit: 0.5 },
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'propulsion' }],
+    part_types: [{ id: 'engine', family_id: 'propulsion', requires_placement_rules: true }],
+    materials: [{ id: 'steel' }],
+    shape_variants: [{
+      id: 'shape_engine',
+      size_id: '4x3x1',
+      generation: { mode: 'voxel_grid', cells: [{ x: 0, y: 0, z: 0, enabled: true }] },
+      anchors: [{ id: 'anchor_back_left', position: { x: 4, y: 0.75, z: 0.5 }, normal: { x: 1, y: 0, z: 0 } }],
+    }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [{
+      id: 'piece_engine',
+      family_id: 'propulsion',
+      type_id: 'engine',
+      material_id: 'steel',
+      size_id: '4x3x1',
+      shape_variant_id: 'shape_engine',
+      placement_rules: {
+        allowed_orientations: [
+          { id: 'flat', dimensions: { length: 4, width: 3, height: 1 }, rotation: { x: 0, y: 0, z: 0 } },
+          { id: 'vertical', dimensions: { length: 4, width: 1, height: 3 }, rotation: { x: 90, y: 0, z: 0 } },
+        ],
+        allowed_symmetry: { length: false, width: true, height: false },
+        mount_points: [
+          { id: 'mount_back_left', face: 'length_max', position: { x: 4, y: 0.75, z: 0.5 }, normal: { x: 1, y: 0, z: 0 }, required: true },
+        ],
+        functional_zones: [
+          { id: 'exhaust', face: 'length_min', direction: 'length_min', must_be_clear: true, clearance: 1 },
+        ],
+      },
+      fixed_catalog_entry: true,
+    }],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, true);
+  assert.equal(report.errors.length, 0);
+});
+
+test('catalog validator keeps legacy structural pieces valid without type_id or placement_rules', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: {},
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'steel' }],
+    shape_variants: [{ id: 'shape_ok', size_id: '4x3x1', generation: { mode: 'voxel_grid', cells: [{ x: 0, y: 0, z: 0, enabled: true }] }, anchors: [] }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [{
+      id: 'piece_legacy',
+      family_id: 'steel',
+      size_id: '4x3x1',
+      shape_variant_id: 'shape_ok',
+      fixed_catalog_entry: true,
+    }],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, true);
+});
+
+test('catalog validator rejects malformed allowed_orientations', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: {},
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'propulsion' }],
+    part_types: [{ id: 'engine', family_id: 'propulsion', requires_placement_rules: true }],
+    materials: [{ id: 'steel' }],
+    shape_variants: [{ id: 'shape_ok', size_id: '4x3x1', generation: { mode: 'voxel_grid', cells: [{ x: 0, y: 0, z: 0, enabled: true }] }, anchors: [] }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [{
+      id: 'piece_engine',
+      family_id: 'propulsion',
+      type_id: 'engine',
+      material_id: 'steel',
+      size_id: '4x3x1',
+      shape_variant_id: 'shape_ok',
+      placement_rules: {
+        allowed_orientations: [{ id: 'flat', dimensions: { length: 4, width: 3 }, rotation: { x: 0, y: 0, z: 0 } }],
+      },
+      fixed_catalog_entry: true,
+    }],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((issue) => issue.code === 'invalid_orientation'));
+});
+
+test('catalog validator rejects malformed mount_points and functional_zones', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: {},
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'propulsion' }],
+    part_types: [{ id: 'engine', family_id: 'propulsion', requires_placement_rules: true }],
+    materials: [{ id: 'steel' }],
+    shape_variants: [{ id: 'shape_ok', size_id: '4x3x1', generation: { mode: 'voxel_grid', cells: [{ x: 0, y: 0, z: 0, enabled: true }] }, anchors: [] }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [{
+      id: 'piece_engine',
+      family_id: 'propulsion',
+      type_id: 'engine',
+      material_id: 'steel',
+      size_id: '4x3x1',
+      shape_variant_id: 'shape_ok',
+      placement_rules: {
+        allowed_orientations: [{ id: 'flat', dimensions: { length: 4, width: 3, height: 1 }, rotation: { x: 0, y: 0, z: 0 } }],
+        mount_points: [{ id: 'mount_bad', face: 'length_max', position: { x: 4, y: 0.75 }, normal: { x: 1, y: 0, z: 0 } }],
+        functional_zones: [{ id: 'zone_bad', face: 'length_min', must_be_clear: 'yes' }],
+      },
+      fixed_catalog_entry: true,
+    }],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((issue) => issue.code === 'invalid_mount_point'));
+  assert.ok(report.errors.some((issue) => issue.code === 'invalid_functional_zone'));
+});
+
+test('catalog validator rejects invalid family and type relation', () => {
+  const catalog = {
+    schema_version: '1',
+    game: {},
+    units: {},
+    definitions: {},
+    sizes: [{ id: '4x3x1', dimensions: { length: 4, width: 3, height: 1 } }],
+    families: [{ id: 'propulsion' }, { id: 'steel' }],
+    part_types: [{ id: 'engine', family_id: 'propulsion', requires_placement_rules: true }],
+    materials: [{ id: 'steel' }],
+    shape_variants: [{ id: 'shape_ok', size_id: '4x3x1', generation: { mode: 'voxel_grid', cells: [{ x: 0, y: 0, z: 0, enabled: true }] }, anchors: [] }],
+    spec_profiles: [],
+    recipes: [],
+    catalog_pieces: [{
+      id: 'piece_engine',
+      family_id: 'steel',
+      type_id: 'engine',
+      material_id: 'steel',
+      size_id: '4x3x1',
+      shape_variant_id: 'shape_ok',
+      placement_rules: {
+        allowed_orientations: [{ id: 'flat', dimensions: { length: 4, width: 3, height: 1 }, rotation: { x: 0, y: 0, z: 0 } }],
+      },
+      fixed_catalog_entry: true,
+    }],
+    ship_blueprint_schema: {},
+  };
+
+  const report = validateCatalogData(catalog);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((issue) => issue.code === 'family_type_mismatch'));
+});

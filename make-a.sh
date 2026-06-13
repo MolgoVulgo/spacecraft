@@ -17,6 +17,7 @@ EXCLUDES=(
   "./node_modules/*"
   "./dist/*"
   "./stl/*"
+  "./tmp/*"
 
   "./.cache/*"
   "./coverage/*"

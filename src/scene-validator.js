@@ -1,3 +1,5 @@
+import { getEffectiveAllowedSymmetry } from './catalog/familyRules.js';
+
 function createIssue(level, path, message, code) {
   return { level, path, message, code };
 }
@@ -43,6 +45,8 @@ export function validateSceneSnapshot(ship, options = {}) {
   const pieces = ship?.pieces;
   const groups = ship?.groups ?? [];
   const catalogPieceIds = new Set(options.catalogPieceIds ?? []);
+  const catalogPiecesById = new Map((options.catalog?.catalog_pieces ?? []).map((piece) => [piece.id, piece]));
+  const shapeVariantsById = new Map((options.catalog?.shape_variants ?? []).map((shape) => [shape.id, shape]));
 
   if (!Array.isArray(pieces)) {
     reporter.error('ship.pieces', 'ship.pieces doit être un tableau.', 'invalid_collection');
@@ -79,6 +83,16 @@ export function validateSceneSnapshot(ship, options = {}) {
       for (const axis of ['width', 'length', 'height']) {
         if (typeof symmetry[axis] !== 'boolean') {
           reporter.error(`${path}.symmetry.${axis}`, `${axis} doit être booléen.`, 'invalid_boolean');
+        }
+      }
+      const catalogPiece = catalogPiecesById.get(catalogPieceId);
+      const shape = shapeVariantsById.get(catalogPiece?.shape_variant_id);
+      const allowedSymmetry = catalogPiece ? getEffectiveAllowedSymmetry(catalogPiece, shape) : null;
+      if (allowedSymmetry) {
+        for (const axis of ['width', 'length', 'height']) {
+          if (symmetry[axis] && allowedSymmetry[axis] === false) {
+            reporter.error(`${path}.symmetry.${axis}`, `${axis} n'est pas autorisée pour cette pièce.`, 'forbidden_symmetry');
+          }
         }
       }
     }

@@ -177,6 +177,10 @@
               </label>
             </div>
           </section>
+          <section class="control-block user-config-section">
+            <h3>Familles</h3>
+            <div id="editorFamilyColorList" class="editor-family-color-list"></div>
+          </section>
           <div class="user-config-actions">
             <button id="resetEditorUserConfigBtn" type="button">Par défaut</button>
             <button id="cancelEditorUserConfigBtn" type="button">Annuler</button>
@@ -261,6 +265,27 @@
           <label>Recette</label>
           <select id="recipeSelect"></select>
           <div id="recipeEditor" class="editor-table"></div>
+        </section>
+      </div>
+    </div>
+
+    <div id="catalogRenameModal" class="modal-shell" aria-hidden="true">
+      <div class="modal-card small-modal-card" role="dialog" aria-modal="true" aria-labelledby="catalogRenameModalTitle">
+        <header class="modal-header">
+          <h2 id="catalogRenameModalTitle">Renommer</h2>
+          <button id="closeCatalogRenameModalBtn" type="button">Fermer</button>
+        </header>
+        <section class="control-block editor-form">
+          <label>ID technique</label>
+          <input id="catalogRenameTechnicalIdInput" type="text" readonly />
+          <label for="catalogRenameLabelInput">Libellé visible</label>
+          <input id="catalogRenameLabelInput" type="text" maxlength="120" />
+          <div id="catalogRenameError" class="editor-form-error" hidden>Le libellé ne peut pas être vide.</div>
+          <div class="button-grid compact">
+            <button id="resetCatalogRenameBtn" type="button">Réinitialiser</button>
+            <button id="cancelCatalogRenameBtn" type="button">Annuler</button>
+            <button id="saveCatalogRenameBtn" type="button" class="primary">Enregistrer</button>
+          </div>
         </section>
       </div>
     </div>

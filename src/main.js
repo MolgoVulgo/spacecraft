@@ -37,6 +37,13 @@ import { createMoveCommand } from './history/commands/move-command.js';
 import { resolveRuntimePath } from './runtime-paths.js';
 import { buildShipCreation } from './ship-creation.js';
 import { getDefaultUserSettings, loadUserSettings, saveUserSettings } from './user-settings.js';
+import { getEffectiveAllowedSymmetry } from './catalog/familyRules.js';
+import {
+  resolveFamilyColor,
+  resolveFamilyLabel,
+  resolvePartLabel,
+  resolveVariantLabel,
+} from './catalog/familyPresentation.js';
 import {
   LEGACY_ASSEMBLY_SIDE_VIEW_ID,
   createAssemblyViewController,
@@ -490,17 +497,17 @@ function getVariantDisplayLabel(shape, size) {
     .replace(/\s+acier\s+\d+x\d+x\d+$/i, '')
     .trim();
   if (shape.variant_index === 0 || /base voxel/i.test(cleaned)) return 'Base';
-  return cleaned || `Variante ${pad2(shape.variant_index ?? '?')}`;
+  const defaultLabel = cleaned || `Variante ${pad2(shape.variant_index ?? '?')}`;
+  return resolveVariantLabel(shape.id, state.userSettings, state.catalog) || defaultLabel;
 }
 
 function getDisplayLabel(catalogPiece) {
-  const family = getFamily(catalogPiece.family_id);
   const size = getSize(catalogPiece.size_id);
   const shape = getShapeVariant(catalogPiece.shape_variant_id);
   const spec = getSpecProfile(catalogPiece.spec_profile_id);
   const profile = spec?.profile_type && spec.profile_type !== 'standard' ? ` · ${spec.profile_type}` : '';
   return [
-    family?.label_fr ?? catalogPiece.family_id,
+    resolveFamilyLabel(catalogPiece.family_id, state.userSettings, state.catalog),
     size?.label ?? catalogPiece.size_id,
     getVariantDisplayLabel(shape, size),
   ].join(' · ') + profile;
@@ -511,9 +518,19 @@ function escapeRegExp(value) {
 }
 
 function getCatalogGroupLabel(catalogPiece) {
-  const family = getFamily(catalogPiece.family_id)?.label_fr ?? catalogPiece.family_id;
+  const family = resolveFamilyLabel(catalogPiece.family_id, state.userSettings, state.catalog);
   const size = getSize(catalogPiece.size_id)?.label ?? catalogPiece.size_id;
   return `${family} · ${size}`;
+}
+
+function getCatalogPieceLabel(catalogPiece) {
+  return resolvePartLabel(catalogPiece.id, state.userSettings, state.catalog) || catalogPiece.label_fr || catalogPiece.id;
+}
+
+function getInstanceDisplayLabel(instance) {
+  const piece = getCatalogPieceById(instance?.catalogPieceId);
+  if (!piece) return instance?.label ?? instance?.id ?? 'Pièce';
+  return `${getCatalogPieceLabel(piece)} #${String(instance.id ?? '').replace('placed_', '')}`;
 }
 
 function buildGeometry(catalogPiece, symmetry = {}) {
@@ -678,7 +695,7 @@ function createInstance(catalogPiece, options = {}) {
 
   const instance = {
     id,
-    label: options.label ?? `${catalogPiece.label_fr || catalogPiece.id} #${id.replace('placed_', '')}`,
+    label: options.label ?? `${getCatalogPieceLabel(catalogPiece)} #${id.replace('placed_', '')}`,
     catalogPieceId: catalogPiece.id,
     groupId: options.groupId ?? null,
     symmetry,
@@ -972,7 +989,7 @@ function refreshInstanceList() {
       option.selected = state.selectedEntityType === 'group' && state.selectedId === entry.id;
     } else {
       const instance = getInstanceById(entry.id);
-      option.textContent = `${entry.label} · sym: ${getSymmetryLabel(instance?.symmetry ?? {})}`;
+      option.textContent = `${getInstanceDisplayLabel(instance)} · sym: ${getSymmetryLabel(instance?.symmetry ?? {})}`;
       option.selected = state.selectedEntityType === 'piece'
         ? state.selectedId === entry.id
         : state.selectedGroupIds.includes(entry.id);
@@ -1012,9 +1029,17 @@ function updateSelectionUi() {
 }
 
 function setSymmetryButtonState(symmetry) {
+  const selected = getSelectedInstance();
+  const catalogPiece = selected ? getCatalogPieceById(selected.catalogPieceId) : null;
+  const shape = catalogPiece ? getShapeVariant(catalogPiece.shape_variant_id) : null;
+  const allowedSymmetry = getEffectiveAllowedSymmetry(catalogPiece, shape);
+
   dom.mirrorLengthBtn.classList.toggle('active', Boolean(symmetry.length));
   dom.mirrorWidthBtn.classList.toggle('active', Boolean(symmetry.width));
   dom.mirrorHeightBtn.classList.toggle('active', Boolean(symmetry.height));
+  dom.mirrorLengthBtn.disabled = Boolean(selected) && allowedSymmetry.length === false;
+  dom.mirrorWidthBtn.disabled = Boolean(selected) && allowedSymmetry.width === false;
+  dom.mirrorHeightBtn.disabled = Boolean(selected) && allowedSymmetry.height === false;
 }
 
 function mountSymmetryButtonIcons() {
@@ -1048,7 +1073,8 @@ function toggleSelectedSymmetry(axis) {
 
   const catalogPiece = getCatalogPieceById(selected.catalogPieceId);
   const shape = getShapeVariant(catalogPiece?.shape_variant_id);
-  if (shape?.allowed_symmetry?.[axis] === false) {
+  const allowedSymmetry = getEffectiveAllowedSymmetry(catalogPiece, shape);
+  if (allowedSymmetry[axis] === false) {
     setMessage(`Symétrie ${axis} désactivée pour cette variante.`);
     return;
   }
@@ -1402,7 +1428,7 @@ function getActiveStatsSelection() {
     : null;
   if (selected) {
     return {
-      label: selected.label,
+      label: getInstanceDisplayLabel(selected),
       instances: [selected],
       fallbackMissingToZero: true,
     };
@@ -1447,11 +1473,17 @@ function updateStats() {
 
   if (!selection.label) {
     if (dom.selectionStatsOverlay) dom.selectionStatsOverlay.hidden = true;
+    dom.selectionStatsOverlay?.style?.setProperty('--family-accent', 'var(--panel-border)');
     if (dom.selectionStatsTitle) dom.selectionStatsTitle.textContent = 'Info pièce';
     if (dom.selectionStats) dom.selectionStats.textContent = 'Aucune sélection active.';
     return;
   }
 
+  const selectedPiece = selection.instances.length === 1 ? getCatalogPieceById(selection.instances[0]?.catalogPieceId) : null;
+  dom.selectionStatsOverlay?.style?.setProperty(
+    '--family-accent',
+    selectedPiece ? resolveFamilyColor(selectedPiece.family_id, state.userSettings, state.catalog) : 'var(--panel-border)',
+  );
   if (dom.selectionStatsOverlay) dom.selectionStatsOverlay.hidden = false;
   if (dom.selectionStatsTitle) {
     dom.selectionStatsTitle.textContent = getSelectionBatch().length !== 1 || getSelectedAssemblyGroup() ? 'Info groupe' : 'Info pièce';
@@ -2976,7 +3008,8 @@ function getAvailableCatalogPieces() {
   return [...(state.catalog?.catalog_pieces ?? [])]
     .filter((piece) => getShapeVariant(piece.shape_variant_id) && getSize(piece.size_id) && getFamily(piece.family_id))
     .sort((a, b) => {
-      const familyCmp = (getFamily(a.family_id)?.label_fr ?? a.family_id).localeCompare(getFamily(b.family_id)?.label_fr ?? b.family_id, 'fr');
+      const familyCmp = resolveFamilyLabel(a.family_id, state.userSettings, state.catalog)
+        .localeCompare(resolveFamilyLabel(b.family_id, state.userSettings, state.catalog), 'fr');
       if (familyCmp !== 0) return familyCmp;
       const sizeCmp = getSizeSortValue(a.size_id) - getSizeSortValue(b.size_id);
       if (sizeCmp !== 0) return sizeCmp;
@@ -3000,7 +3033,7 @@ function normalizeAssemblyCatalogFilters(pieces) {
 function renderAssemblyCatalogFilters(pieces) {
   renderFilterSelect(dom.catalogFamilyFilter, uniqueBy(pieces, (piece) => piece.family_id).map((piece) => ({
     value: piece.family_id,
-    label: getFamily(piece.family_id)?.label_fr ?? piece.family_id,
+    label: resolveFamilyLabel(piece.family_id, state.userSettings, state.catalog),
   })), state.catalogFilters.familyId, (value) => {
     state.catalogFilters.familyId = value;
     state.catalogFilters.sizeId = null;
@@ -3053,6 +3086,7 @@ function renderSizeList(sizeOptions) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'catalog-size-item';
+    button.style.setProperty('--family-accent', resolveFamilyColor(state.catalogFilters.familyId, state.userSettings, state.catalog));
     button.draggable = true;
     button.dataset.sizeId = option.value;
     button.setAttribute('role', 'option');
@@ -3150,6 +3184,7 @@ function renderShapePalette(pieces) {
   }
 
   const variantMap = getShapePaletteVariantMap(getShapePalettePieces(pieces));
+  const familyAccent = resolveFamilyColor(selectedInstancePiece.family_id, state.userSettings, state.catalog);
   for (let variantIndex = 1; variantIndex <= SHAPE_BUTTON_COUNT; variantIndex += 1) {
     const piece = variantMap.get(variantIndex) ?? null;
     const shape = getShapeVariant(piece?.shape_variant_id);
@@ -3157,6 +3192,7 @@ function renderShapePalette(pieces) {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'shape-palette-item catalog-piece-item';
+    item.style.setProperty('--family-accent', familyAccent);
     item.dataset.variantIndex = String(variantIndex);
     item.setAttribute('role', 'option');
     item.title = piece
@@ -3196,6 +3232,7 @@ function applyCatalogShapeToSelectedInstance(pieceId) {
     createAssemblyEdgeGeometry,
     createAnchorGroup,
     disposeAnchorGroup,
+    buildInstanceLabel: (piece, instance) => `${getCatalogPieceLabel(piece)} #${String(instance?.id ?? '').replace('placed_', '')}`,
     setSelectedCatalogPieceId: (nextPieceId) => {
       state.selectedCatalogPieceId = nextPieceId;
     },

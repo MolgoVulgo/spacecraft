@@ -248,6 +248,45 @@
       "category": "ship_part",
       "subcategory": "fuselage_part",
       "status": "partial"
+    },
+    {
+      "id": "propulsion",
+      "label_fr": "Propulsion",
+      "group_label_fr": "SYSTÈMES DE PROPULSION",
+      "category": "ship_part",
+      "subcategory": "functional_part",
+      "allowed_types": [
+        "engine",
+        "thruster"
+      ],
+      "allowed_stats": [
+        "system_support",
+        "power",
+        "propulsion",
+        "electricity_consumption",
+        "steering_force",
+        "extra_propulsion",
+        "accelerator_electricity_consumption",
+        "accelerator_heat_generation",
+        "thermal_conductivity"
+      ],
+      "status": "draft"
+    }
+  ],
+  "part_types": [
+    {
+      "id": "engine",
+      "family_id": "propulsion",
+      "label_fr": "Moteur",
+      "requires_placement_rules": true
+    }
+  ],
+  "materials": [
+    {
+      "id": "steel",
+      "label_fr": "Acier",
+      "technology_group": "metal",
+      "status": "partial"
     }
   ],
   "shape_variants": [
@@ -20582,6 +20621,36 @@
   ],
   "spec_profiles": [
     {
+      "id": "spec_propulsion_engine_4x3x1_basic",
+      "family_id": "propulsion",
+      "size_id": "4x3x1",
+      "profile_type": "standard",
+      "label_fr": "Moteur 4x3x1",
+      "specs": {
+        "system_support": {
+          "value": 12,
+          "unit": "SP",
+          "status": "draft"
+        },
+        "mass": {
+          "value": 24,
+          "unit": "t",
+          "status": "draft"
+        },
+        "thermal_conductivity": {
+          "value": 60,
+          "unit": "W/aK",
+          "status": "draft"
+        }
+      },
+      "metadata": {
+        "source": "functional_family_sample",
+        "notes": [
+          "Minimal propulsion sample reusing an existing voxel shape."
+        ]
+      }
+    },
+    {
       "id": "spec_steel_4x3x1_standard",
       "family_id": "steel",
       "size_id": "4x3x1",
@@ -21733,6 +21802,30 @@
   ],
   "recipes": [
     {
+      "id": "recipe_propulsion_engine_4x3x1_basic",
+      "output_spec_profile_id": "spec_propulsion_engine_4x3x1_basic",
+      "cost": {
+        "value": null,
+        "currency": "C",
+        "status": "unknown"
+      },
+      "duration": {
+        "value": null,
+        "unit": "su",
+        "status": "unknown"
+      },
+      "station": {
+        "id": "workshop",
+        "label_fr": "Atelier",
+        "status": "unknown"
+      },
+      "ingredients": [],
+      "metadata": {
+        "source": "functional_family_sample",
+        "notes": []
+      }
+    },
+    {
       "id": "recipe_levinium_4x3x2_standard",
       "output_spec_profile_id": "spec_levinium_4x3x2_standard",
       "cost": {
@@ -22301,6 +22394,92 @@
     }
   ],
   "catalog_pieces": [
+    {
+      "id": "piece_engine_4x3x1_basic",
+      "label_fr": "Moteur 4x3x1",
+      "family_id": "propulsion",
+      "type_id": "engine",
+      "material_id": "steel",
+      "size_id": "4x3x1",
+      "shape_variant_id": "shape_steel_4x3x1_v01",
+      "spec_profile_id": "spec_propulsion_engine_4x3x1_basic",
+      "recipe_id": "recipe_propulsion_engine_4x3x1_basic",
+      "placement_rules": {
+        "allowed_orientations": [
+          {
+            "id": "flat",
+            "dimensions": {
+              "length": 4,
+              "width": 3,
+              "height": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "thrust_direction": "length_min"
+          },
+          {
+            "id": "vertical",
+            "dimensions": {
+              "length": 4,
+              "width": 1,
+              "height": 3
+            },
+            "rotation": {
+              "x": 90,
+              "y": 0,
+              "z": 0
+            },
+            "thrust_direction": "height_min"
+          }
+        ],
+        "allowed_symmetry": {
+          "length": false,
+          "width": true,
+          "height": false
+        },
+        "mount_points": [
+          {
+            "id": "mount_back_left",
+            "face": "length_max",
+            "position": {
+              "x": 4,
+              "y": 0.75,
+              "z": 0.5
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "type": "structural",
+            "required": true
+          }
+        ],
+        "functional_zones": [
+          {
+            "id": "exhaust",
+            "face": "length_min",
+            "direction": "length_min",
+            "must_be_clear": true,
+            "clearance": 1
+          }
+        ]
+      },
+      "fixed_catalog_entry": true,
+      "availability": {
+        "status": "draft",
+        "unlock": null
+      },
+      "metadata": {
+        "source": "functional_family_sample",
+        "notes": [
+          "Sample propulsion piece. Geometry intentionally reuses the standard voxel shape pipeline."
+        ]
+      }
+    },
     {
       "id": "piece_steel_4x3x1_base_standard",
       "label_fr": "Acier 4x3x1",
@@ -22966,6 +23145,15 @@
         "4x3x2",
         "6x3x2",
         "8x3x2"
+      ]
+    },
+    {
+      "id": "propulsion",
+      "label_fr": "SYSTÈMES DE PROPULSION",
+      "family_id": "propulsion",
+      "piece_label_fr": "Moteur",
+      "sizes": [
+        "4x3x1"
       ]
     }
   ]

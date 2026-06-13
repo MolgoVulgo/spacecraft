@@ -40,6 +40,13 @@ export const DEFAULT_USER_SETTINGS = {
     undoLimit: 10,
     autoSaveEnabled: true,
     autoSaveInterval: 5,
+    familyColors: {},
+    labels: {
+      families: {},
+      types: {},
+      parts: {},
+      variants: {},
+    },
   },
   paths: {
     defaultImportDir: '',
@@ -67,6 +74,12 @@ function sanitizeColor(value, fallback) {
   return /^#[0-9a-f]{6}$/i.test(String(value ?? '')) ? String(value).toLowerCase() : fallback;
 }
 
+function sanitizeTrimmedString(value, fallback = '') {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}
+
 function sanitizeString(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
@@ -77,6 +90,38 @@ function sanitizeBoolean(value, fallback) {
 
 function sanitizeEnum(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
+}
+
+function sanitizeColorMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [id, color] of Object.entries(value)) {
+    const safeId = sanitizeTrimmedString(id);
+    const safeColor = sanitizeColor(color, null);
+    if (safeId && safeColor) normalized[safeId] = safeColor;
+  }
+  return normalized;
+}
+
+function sanitizeLabelMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [id, label] of Object.entries(value)) {
+    const safeId = sanitizeTrimmedString(id);
+    const safeLabel = sanitizeTrimmedString(label);
+    if (safeId && safeLabel) normalized[safeId] = safeLabel;
+  }
+  return normalized;
+}
+
+function sanitizeEditorLabels(value) {
+  const labels = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    families: sanitizeLabelMap(labels.families),
+    types: sanitizeLabelMap(labels.types),
+    parts: sanitizeLabelMap(labels.parts),
+    variants: sanitizeLabelMap(labels.variants),
+  };
 }
 
 export function normalizeAdvancedSettings(input = {}) {
@@ -130,6 +175,8 @@ export function normalizeUserSettings(input = {}) {
       undoLimit: Math.round(clampNumber(settings.editor?.undoLimit, defaults.editor.undoLimit, 1, 200)),
       autoSaveEnabled: sanitizeBoolean(settings.editor?.autoSaveEnabled, defaults.editor.autoSaveEnabled),
       autoSaveInterval: Math.round(clampNumber(settings.editor?.autoSaveInterval, defaults.editor.autoSaveInterval, 1, 300)),
+      familyColors: sanitizeColorMap(settings.editor?.familyColors),
+      labels: sanitizeEditorLabels(settings.editor?.labels),
     },
     paths: {
       defaultImportDir: sanitizeString(settings.paths?.defaultImportDir, defaults.paths.defaultImportDir),
